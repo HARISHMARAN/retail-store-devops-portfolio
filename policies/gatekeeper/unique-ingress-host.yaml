@@ -1,0 +1,61 @@
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: uniqueingresshost
+  annotations:
+    description: "Ensures Ingress hosts are unique across the cluster"
+    metadata.gatekeeper.sh/title: "Unique Ingress Host"
+    metadata.gatekeeper.sh/version: "1.0.0"
+spec:
+  crd:
+    spec:
+      names:
+        kind: UniqueIngressHost
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            exemptNamespaces:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package uniqueingresshost
+
+        violation[{"msg": msg, "details": details}] {
+          input.review.kind.kind == "Ingress"
+          host := input.review.object.spec.rules[_].host
+          other := data.inventory.namespace[_]["Ingress"][other_name]
+          other_name != input.review.object.metadata.name
+          other_host := other.spec.rules[_].host
+          host == other_host
+          msg := sprintf("Ingress host '%v' is already defined in ingress '%v'", [host, other_name])
+          details := {"host": host, "duplicate_ingress": other_name, "namespace": input.review.namespace}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          input.review.kind.kind == "Ingress"
+          host := input.review.object.spec.rules[_].host
+          other := data.inventory.namespace[_]["Ingress"][other_name]
+          other_name != input.review.object.metadata.name
+          other_namespace := input.review.namespace
+          other_namespace != input.review.namespace
+          other_host := other.spec.rules[_].host
+          host == other_host
+          msg := sprintf("Ingress host '%v' is already defined in ingress '%v' in namespace '%v'", [host, other_name, other_namespace])
+          details := {"host": host, "duplicate_ingress": other_name, "namespace": other_namespace}
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: UniqueIngressHost
+metadata:
+  name: unique-ingress-host
+  annotations:
+    description: "Ensures ingress hosts are unique across the cluster"
+spec:
+  match:
+    kinds:
+      - apiGroups: ["networking.k8s.io"]
+        kinds: ["Ingress"]

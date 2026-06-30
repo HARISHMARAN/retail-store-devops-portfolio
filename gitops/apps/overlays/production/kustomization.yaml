@@ -1,0 +1,69 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: retail-store-production
+
+resources:
+  - ../base
+  - ingress.yaml
+  - hpa.yaml
+  - pod-disruption-budgets.yaml
+  - secrets.yaml
+  - network-policies.yaml
+
+commonLabels:
+  environment: production
+
+commonAnnotations:
+  owner: platform-team
+  run-mode: production
+  audit: enabled
+
+replicas:
+  - name: ui
+    count: 3
+  - name: catalog
+    count: 3
+  - name: cart
+    count: 3
+  - name: orders
+    count: 3
+  - name: checkout
+    count: 3
+
+images:
+  - name: public.ecr.aws/aws-containers/retail-store-sample-ui
+    newTag: "1.6.1"
+  - name: public.ecr.aws/aws-containers/retail-store-sample-catalog
+    newTag: "1.6.1"
+  - name: public.ecr.aws/aws-containers/retail-store-sample-cart
+    newTag: "1.6.1"
+  - name: public.ecr.aws/aws-containers/retail-store-sample-orders
+    newTag: "1.6.1"
+  - name: public.ecr.aws/aws-containers/retail-store-sample-checkout
+    newTag: "1.6.1"
+
+configMapGenerator:
+  - name: retail-store-env-config
+    behavior: merge
+    literals:
+      - ENVIRONMENT=production
+      - LOG_LEVEL=info
+      - ENABLE_TRACING=true
+      - METRICS_ENABLED=true
+      - JAVA_OPTS=-Xms512m -Xmx1024m -XX:+UseG1GC
+
+patchesStrategicMerge:
+  - resource-limits.yaml
+  - security-contexts.yaml
+
+patches:
+  - target:
+      kind: Deployment
+      name: ui
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: RETAIL_UI_THEME
+          value: "default"

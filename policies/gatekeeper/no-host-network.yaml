@@ -1,0 +1,78 @@
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: nohostnetwork
+  annotations:
+    description: "Blocks pods from using host network, PID, or IPC namespaces"
+    metadata.gatekeeper.sh/title: "No Host Network"
+    metadata.gatekeeper.sh/version: "1.0.0"
+spec:
+  crd:
+    spec:
+      names:
+        kind: NoHostNetwork
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            exemptNamespaces:
+              type: array
+              items:
+                type: string
+            blockHostNetwork:
+              type: boolean
+              default: true
+            blockHostPID:
+              type: boolean
+              default: true
+            blockHostIPC:
+              type: boolean
+              default: true
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package nohostnetwork
+
+        violation[{"msg": msg, "details": details}] {
+          input.parameters.blockHostNetwork
+          input.review.object.spec.hostNetwork == true
+          msg := sprintf("Pod '%v' uses hostNetwork=true. Using host network namespace is not allowed", [input.review.object.metadata.name])
+          details := {"violation": "hostNetwork"}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          input.parameters.blockHostPID
+          input.review.object.spec.hostPID == true
+          msg := sprintf("Pod '%v' uses hostPID=true. Using host PID namespace is not allowed", [input.review.object.metadata.name])
+          details := {"violation": "hostPID"}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          input.parameters.blockHostIPC
+          input.review.object.spec.hostIPC == true
+          msg := sprintf("Pod '%v' uses hostIPC=true. Using host IPC namespace is not allowed", [input.review.object.metadata.name])
+          details := {"violation": "hostIPC"}
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: NoHostNetwork
+metadata:
+  name: no-host-network
+  annotations:
+    description: "Block pods from using host network, PID, or IPC namespaces"
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+      - apiGroups: ["apps"]
+        kinds: ["Deployment", "DaemonSet", "StatefulSet", "ReplicaSet"]
+      - apiGroups: ["batch"]
+        kinds: ["Job", "CronJob"]
+    excludedNamespaces:
+      - kube-system
+      - gatekeeper-system
+  parameters:
+    blockHostNetwork: true
+    blockHostPID: true
+    blockHostIPC: true

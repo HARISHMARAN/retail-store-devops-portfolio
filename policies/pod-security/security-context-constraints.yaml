@@ -1,0 +1,298 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: security-context-constraints
+  namespace: retail-store
+  labels:
+    app.kubernetes.io/name: security-contexts
+    app.kubernetes.io/component: security
+data:
+  baseline-security-context.yaml: |
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: baseline-security-context
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+        supplementalGroups:
+          - 1000
+      containers:
+        - name: app
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+  restricted-security-context.yaml: |
+    apiVersion: v1
+    kind: Pod
+    metadata:
+      name: restricted-security-context
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+        supplementalGroups:
+          - 1000
+        sysctls: []
+      containers:
+        - name: app
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+            privileged: false
+            procMount: Default
+  catalog-context.yaml: |
+    apiVersion: v1
+    kind: Pod
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: catalog
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+  ui-context.yaml: |
+    apiVersion: v1
+    kind: Pod
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ui
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+  cart-context.yaml: |
+    apiVersion: v1
+    kind: Pod
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cart
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+  orders-context.yaml: |
+    apiVersion: v1
+    kind: Pod
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: orders
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+  checkout-context.yaml: |
+    apiVersion: v1
+    kind: Pod
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: checkout
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+  recommendations-context.yaml: |
+    apiVersion: v1
+    kind: Pod
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: recommendations
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: mutations.gatekeeper.sh/v1alpha1
+kind: Assign
+metadata:
+  name: assign-securitycontext
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    excludedNamespaces:
+      - kube-system
+      - gatekeeper-system
+      - kube-public
+    labelSelector:
+      matchLabels:
+        security.retail-store.io/enforce: "true"
+  location: "spec.containers[name:*].securityContext.runAsUser"
+  parameters:
+    pathTests:
+      - subPath: "spec.containers[name:*].securityContext.runAsUser"
+        condition: MustNotExist
+    assign:
+      value: 1000
+---
+apiVersion: mutations.gatekeeper.sh/v1alpha1
+kind: Assign
+metadata:
+  name: assign-runasnonroot
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    excludedNamespaces:
+      - kube-system
+      - gatekeeper-system
+  location: "spec.securityContext.runAsNonRoot"
+  parameters:
+    pathTests:
+      - subPath: "spec.securityContext.runAsNonRoot"
+        condition: MustNotExist
+    assign:
+      value: true
+---
+apiVersion: mutations.gatekeeper.sh/v1alpha1
+kind: Assign
+metadata:
+  name: assign-readonly-fs
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    excludedNamespaces:
+      - kube-system
+      - gatekeeper-system
+    namespaces:
+      - production
+  location: "spec.containers[name:*].securityContext.readOnlyRootFilesystem"
+  parameters:
+    pathTests:
+      - subPath: "spec.containers[name:*].securityContext.readOnlyRootFilesystem"
+        condition: MustNotExist
+    assign:
+      value: true
+---
+apiVersion: mutations.gatekeeper.sh/v1alpha1
+kind: Assign
+metadata:
+  name: assign-seccomp
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    excludedNamespaces:
+      - kube-system
+      - gatekeeper-system
+  location: "spec.securityContext.seccompProfile.type"
+  parameters:
+    pathTests:
+      - subPath: "spec.securityContext.seccompProfile.type"
+        condition: MustNotExist
+    assign:
+      value: "RuntimeDefault"
+---
+apiVersion: mutations.gatekeeper.sh/v1alpha1
+kind: Assign
+metadata:
+  name: assign-allowprivilegeescalation
+spec:
+  applyTo:
+    - groups: [""]
+      kinds: ["Pod"]
+      versions: ["v1"]
+  match:
+    excludedNamespaces:
+      - kube-system
+      - gatekeeper-system
+  location: "spec.containers[name:*].securityContext.allowPrivilegeEscalation"
+  parameters:
+    pathTests:
+      - subPath: "spec.containers[name:*].securityContext.allowPrivilegeEscalation"
+        condition: MustNotExist
+    assign:
+      value: false

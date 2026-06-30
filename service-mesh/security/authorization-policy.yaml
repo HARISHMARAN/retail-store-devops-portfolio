@@ -1,0 +1,133 @@
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: deny-all
+  namespace: retail-store-production
+spec:
+  {}
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-ingress
+  namespace: retail-store-production
+spec:
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: ui-policy
+  namespace: retail-store-production
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ui
+  rules:
+    - from:
+        - source:
+            principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+      to:
+        - operation:
+            methods: ["GET", "POST"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: catalog-policy
+  namespace: retail-store-production
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: catalog
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/retail-store-production/sa/ui"
+              - "cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"
+      to:
+        - operation:
+            methods: ["GET"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: cart-policy
+  namespace: retail-store-production
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cart
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/retail-store-production/sa/ui"
+              - "cluster.local/ns/retail-store-production/sa/checkout"
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: orders-policy
+  namespace: retail-store-production
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orders
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/retail-store-production/sa/checkout"
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: checkout-policy
+  namespace: retail-store-production
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: checkout
+  rules:
+    - from:
+        - source:
+            principals:
+              - "cluster.local/ns/retail-store-production/sa/ui"
+    - to:
+        - operation:
+            methods: ["POST", "PUT"]
+            paths: ["/api/checkout/*"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: jwt-auth
+  namespace: retail-store-production
+spec:
+  selector:
+    matchLabels:
+      auth: jwt
+  jwtRules:
+    - issuer: "https://auth.retailstore.example.com"
+      jwksUri: "https://auth.retailstore.example.com/.well-known/jwks.json"
+      audiences:
+        - "retail-store-api"
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: require-auth
+  namespace: retail-store-production
+spec:
+  selector:
+    matchLabels:
+      auth: jwt
+  rules:
+    - from:
+        - source:
+            requestPrincipals: ["https://auth.retailstore.example.com/*"]

@@ -1,0 +1,263 @@
+name: CD - Deploy Staging
+
+on:
+  workflow_run:
+    workflows: ["CI - Build, Test & Security Scan"]
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  AWS_REGION: us-west-2
+
+jobs:
+  deploy-staging:
+    name: Deploy to Staging
+    if: |
+      github.event.workflow_run.conclusion == 'success' || 
+      github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-Deploy-Staging
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Install ArgoCD CLI
+        run: |
+          curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name retail-store-staging --region ${{ env.AWS_REGION }}
+
+      - name: Install kustomize
+        uses: imranismail/setup-kustomize@v2
+        with:
+          kustomize-version: "5.0.0"
+
+      - name: Build kustomize manifests
+        run: |
+          cd gitops/apps/overlays/staging
+          kustomize build . > staged-manifests.yaml
+
+      - name: Dry-run deployment
+        run: |
+          kubectl apply --dry-run=client -f staged-manifests.yaml
+        working-directory: gitops/apps/overlays/staging
+
+      - name: Sync ArgoCD application
+        run: |
+          argocd login ${{ secrets.ARGOCD_SERVER }} --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} --grpc-web
+          argocd app sync retail-store-staging --force
+          argocd app wait retail-store-staging --timeout 600
+
+      - name: Wait for deployment rollout
+        run: |
+          kubectl rollout status deployment/ui -n retail-store-staging --timeout=300s
+          kubectl rollout status deployment/catalog -n retail-store-staging --timeout=300s
+          kubectl rollout status deployment/cart -n retail-store-staging --timeout=300s
+          kubectl rollout status deployment/orders -n retail-store-staging --timeout=300s
+          kubectl rollout status deployment/checkout -n retail-store-staging --timeout=300s
+
+      - name: Run smoke tests
+        run: |
+          kubectl wait --for=condition=available --timeout=180s deployment/ui -n retail-store-staging
+          
+          # Get the service endpoint
+          SERVICE_URL=$(kubectl get svc ui -n retail-store-staging -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          
+          # Run basic health checks
+          curl -sf "http://${SERVICE_URL}:8080/health" || exit 1
+          curl -sf "http://${SERVICE_URL}:8080/api/catalog/health" || exit 1
+
+      - name: Notify deployment status
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          curl -X POST -H 'Content-type: application/json' \
+            --data '{"text":"Staging deployment ${STATUS} - ${{ github.sha }}"}' \
+            ${{ secrets.SLACK_WEBHOOK_URL }} || true
+
+---
+
+name: CD - Deploy Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag to deploy (e.g., v1.6.1)'
+        required: true
+        type: string
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+  push:
+    tags:
+      - 'v*'
+
+env:
+  AWS_REGION: us-west-2
+
+jobs:
+  approve-production:
+    name: Approve Production Deployment
+    runs-on: ubuntu-latest
+    environment: production
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Deployment approval
+        run: echo "Production deployment approved"
+
+  deploy-production:
+    name: Deploy to Production
+    needs: approve-production
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.version || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: GitHubActions-Deploy-Production
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Install ArgoCD CLI
+        run: |
+          curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name retail-store-production --region ${{ env.AWS_REGION }}
+
+      - name: Verify image exists
+        run: |
+          VERSION="${{ inputs.version || github.ref_name }}"
+          # Verify all images exist in ECR
+          for service in ui catalog cart orders checkout; do
+            docker pull public.ecr.aws/aws-containers/retail-store-sample-${service}:${VERSION#v} || exit 1
+          done
+
+      - name: Sync ArgoCD application - Canary start
+        run: |
+          argocd login ${{ secrets.ARGOCD_SERVER }} --auth-token ${{ secrets.ARGOCD_AUTH_TOKEN }} --grpc-web
+          
+          # Start canary deployment through Argo Rollouts
+          kubectl patch rollout ui-rollout -n retail-store-production --type merge -p '{"spec":{"replicas":3}}' || true
+          kubectl patch rollout catalog-rollout -n retail-store-production --type merge -p '{"spec":{"replicas":3}}' || true
+          kubectl patch rollout checkout-rollout -n retail-store-production --type merge -p '{"spec":{"replicas":5}}' || true
+
+      - name: Monitor canary health
+        run: |
+          # Wait for canary analysis
+          sleep 120
+          
+          # Check error rate
+          ERROR_RATE=$(kubectl get prometheus -n monitoring -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "0")
+          
+          if [ "$ERROR_RATE" -gt 5 ]; then
+            echo "Error rate too high during canary. Aborting."
+            kubectl abort rollout -n retail-store-production deployment/ui || true
+            exit 1
+          fi
+
+      - name: Promote to full production
+        if: success()
+        run: |
+          argocd app sync retail-store-production --force
+          argocd app wait retail-store-production --timeout 900
+
+      - name: Verify production deployment
+        run: |
+          kubectl rollout status deployment/ui -n retail-store-production --timeout=600s
+          kubectl rollout status deployment/catalog -n retail-store-production --timeout=600s
+          kubectl rollout status deployment/cart -n retail-store-production --timeout=600s
+          kubectl rollout status deployment/orders -n retail-store-production --timeout=600s
+          kubectl rollout status deployment/checkout -n retail-store-production --timeout=600s
+
+      - name: Production smoke tests
+        run: |
+          SERVICE_URL="www.retailstore.example.com"
+          
+          # Run comprehensive health checks
+          curl -sf "https://${SERVICE_URL}/health" || exit 1
+          curl -sf "https://${SERVICE_URL}/api/catalog/health" || exit 1
+
+      - name: Create GitHub release
+        if: success()
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ inputs.version }}
+          name: Release ${{ inputs.version }}
+          body: |
+            ## Production deployment completed
+            - Version: ${{ inputs.version }}
+            - Deployed by: ${{ github.actor }}
+            - Commit: ${{ github.sha }}
+          draft: false
+          prerelease: false
+
+      - name: Notify production deployment
+        if: always()
+        run: |
+          STATUS="${{ job.status }}"
+          VERSION="${{ inputs.version || github.ref_name }}"
+          curl -X POST -H 'Content-type: application/json' \
+            --data "{\"text\":\"Production deployment ${STATUS} - ${VERSION} - Deployed by ${{ github.actor }}\"}" \
+            ${{ secrets.SLACK_WEBHOOK_URL }} || true

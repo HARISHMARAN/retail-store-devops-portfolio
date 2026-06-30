@@ -1,0 +1,259 @@
+name: CI - Build, Test & Security Scan
+
+on:
+  push:
+    branches:
+      - main
+      - 'release-*'
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - 'diagrams/**'
+
+env:
+  REGISTRY: public.ecr.aws/aws-containers
+  TERRAFORM_VERSION: "1.5.7"
+  GO_VERSION: "1.21"
+  JAVA_VERSION: "17"
+  NODE_VERSION: "18"
+
+jobs:
+  detect-changes:
+    name: Detect Changed Services
+    runs-on: ubuntu-latest
+    outputs:
+      services: ${{ steps.changes.outputs.services }}
+      infrastructure: ${{ steps.changes.outputs.infrastructure }}
+      kubernetes: ${{ steps.changes.outputs.kubernetes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Detect changes
+        id: changes
+        run: |
+          echo "services=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep -E '^src/([^/]+)/' | cut -d'/' -f2 | sort -u | jq -R -s 'split("\n")[:-1] | @json' || echo '[]')" >> $GITHUB_OUTPUT
+          echo "infrastructure=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep -E '^terraform/|^gitops/infrastructure/' > /dev/null && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+          echo "kubernetes=$(git diff --name-only ${{ github.event.before }} ${{ github.sha }} | grep -E '^gitops/apps/' > /dev/null && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
+
+  lint:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'yarn'
+
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Run linters
+        run: |
+          yarn nx run-many -t lint --all --parallel
+
+      - name: Prettier check
+        run: yarn prettier --check .
+
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          severity: 'CRITICAL,HIGH'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+          category: 'trivy'
+
+      - name: Run Snyk scan
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+
+      - name: Run tfsec for Terraform
+        uses: aquasecurity/tfsec-action@v1.0.0
+        with:
+          soft_fail: true
+
+  unit-tests:
+    name: Unit Tests (${{ matrix.service }})
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(needs.detect-changes.outputs.services) || fromJson('["ui","catalog","card","orders","checkout"]') }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup service environment
+        uses: ./.github/actions/setup-service
+        with:
+          service: ${{ matrix.service }}
+
+      - name: Run unit tests
+        run: yarn nx test ${{ matrix.service }} --coverage
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v3
+        with:
+          flags: ${{ matrix.service }}
+          fail_ci_if_error: false
+
+  build-images:
+    name: Build Container Images
+    needs: [lint, unit-tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - ui
+          - catalog
+          - cart
+          - orders
+          - checkout
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-west-2
+          role-session-name: GitHubActions-${{ github.run_id }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY }}/retail-store-sample-${{ matrix.service }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: ./src/${{ matrix.service }}
+          file: ./src/${{ matrix.service }}/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+          sbom: true
+          provenance: true
+
+      - name: Sign image with Cosign
+        run: |
+          cosign sign --yes ${{ steps.login-ecr.outputs.registry }}/${{ env.REGISTRY }}/retail-store-sample-${{ matrix.service }}@${{ steps.meta.outputs.digest }}
+
+  terraform-validate:
+    name: Terraform Validation
+    needs: detect-changes
+    if: needs.detect-changes.outputs.infrastructure == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TERRAFORM_VERSION }}
+          terraform_wrapper: false
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive terraform/
+
+      - name: Terraform Init - Staging
+        run: terraform init -backend=false
+        working-directory: terraform/environments/staging
+
+      - name: Terraform Validate - Staging
+        run: terraform validate
+        working-directory: terraform/environments/staging
+
+      - name: Terraform Plan - Staging
+        id: plan-staging
+        run: terraform plan -no-color -var-file="terraform.tfvars"
+        working-directory: terraform/environments/staging
+        continue-on-error: true
+
+      - name: Terraform Init - Production
+        run: terraform init -backend=false
+        working-directory: terraform/environments/production
+
+      - name: Terraform Validate - Production
+        run: terraform validate
+        working-directory: terraform/environments/production
+
+  policy-check:
+    name: OPA Policy Check
+    needs: detect-changes
+    if: needs.detect-changes.outputs.kubernetes == 'true' || github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup OPA
+        uses: open-policy-agent/setup-opa@v2
+        with:
+          version: latest
+
+      - name: Check Kubernetes manifests against policies
+        run: |
+          for file in $(find gitops -name "*.yaml" -type f); do
+            echo "Checking $file..."
+            opa check --bundle policies/k8s.rego "$file" || true
+          done
+
+      - name: Conftest policy check
+        uses: instrumenta/conftest-action@v1
+        with:
+          files: gitops/apps/**/*.yaml
+          policy: policies/

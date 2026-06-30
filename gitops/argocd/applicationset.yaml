@@ -1,0 +1,93 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: retail-store-apps
+  namespace: argocd
+spec:
+  generators:
+    - matrix:
+        generators:
+          - git:
+              repoURL: https://github.com/Harishmaranthirumaran/retail-store-sample-app.git
+              revision: main
+              directories:
+                - path: gitops/apps/overlays/*
+          - list:
+              elements:
+                - environment: staging
+                  server: https://kubernetes.default.svc
+                  syncPolicy: automated
+                - environment: production
+                  server: https://kubernetes.default.svc
+                  syncPolicy: manual
+  template:
+    metadata:
+      name: 'retail-store-{{environment}}'
+      labels:
+        app.kubernetes.io/name: retail-store
+        environment: '{{environment}}'
+      annotations:
+        argocd.argoproj.io/sync-wave: "1"
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/Harishmaranthirumaran/retail-store-sample-app.git
+        targetRevision: main
+        path: 'gitops/apps/overlays/{{environment}}'
+      destination:
+        server: '{{server}}'
+        namespace: 'retail-store-{{environment}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+          allowEmpty: false
+        syncOptions:
+          - CreateNamespace=true
+          - PruneLast=true
+          - ApplyOutOfSyncOnly=true
+          - RespectIgnoreDifferences=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 5s
+            factor: 2
+            maxDuration: 3m
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: retail-store-infrastructure
+  namespace: argocd
+spec:
+  generators:
+    - git:
+        repoURL: https://github.com/Harishmaranthirumaran/retail-store-sample-app.git
+        revision: main
+        files:
+          - path: "gitops/infrastructure/**/config.yaml"
+  template:
+    metadata:
+      name: '{{name}}'
+      labels:
+        app.kubernetes.io/name: '{{name}}'
+        type: infrastructure
+        managed-by: argocd
+      annotations:
+        argocd.argoproj.io/sync-wave: "0"
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/Harishmaranthirumaran/retail-store-sample-app.git
+        targetRevision: main
+        path: '{{path}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: '{{namespace}}'
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true

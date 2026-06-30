@@ -1,0 +1,199 @@
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: retail-store-gateway
+  namespace: retail-store-production
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      tls:
+        mode: SIMPLE
+        credentialName: retail-store-production-tls
+      hosts:
+        - "www.retailstore.example.com"
+        - "retailstore.example.com"
+---
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: retail-store-gateway
+  namespace: retail-store-staging
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+    - port:
+        number: 443
+        name: https
+        protocol: HTTPS
+      tls:
+        mode: SIMPLE
+        credentialName: retail-store-staging-tls
+      hosts:
+        - "staging.retailstore.example.com"
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: ui
+  namespace: retail-store-production
+spec:
+  hosts:
+    - "www.retailstore.example.com"
+    - "retailstore.example.com"
+  gateways:
+    - retail-store-gateway
+  http:
+    - match:
+        - uri:
+            prefix: /api/catalog
+      route:
+        - destination:
+            host: catalog
+            port:
+              number: 8080
+          weight: 100
+      retries:
+        attempts: 3
+        perTryTimeout: 2s
+        retryOn: gateway-error,connect-failure,refused-stream
+      timeout: 10s
+    
+    - match:
+        - uri:
+            prefix: /api/cart
+      route:
+        - destination:
+            host: cart
+            port:
+              number: 8080
+      retries:
+        attempts: 3
+        perTryTimeout: 2s
+      timeout: 10s
+    
+    - match:
+        - uri:
+            prefix: /api/orders
+      route:
+        - destination:
+            host: orders
+            port:
+              number: 8080
+      timeout: 15s
+    
+    - match:
+        - uri:
+            prefix: /api/checkout
+      route:
+        - destination:
+            host: checkout
+            port:
+              number: 8080
+      timeout: 30s
+    
+    - match:
+        - uri:
+            prefix: /
+      route:
+        - destination:
+            host: ui
+            port:
+              number: 8080
+      timeout: 30s
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: ui
+  namespace: retail-store-production
+spec:
+  host: ui
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 100
+      http:
+        h2UpgradePolicy: UPGRADE
+        http1MaxPendingRequests: 100
+        http2MaxRequests: 1000
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 50
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: v1
+      labels:
+        version: v1
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: catalog
+  namespace: retail-store-production
+spec:
+  host: catalog
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 200
+      http:
+        http1MaxPendingRequests: 200
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 15s
+      baseEjectionTime: 30s
+      maxEjectionPercent: 30
+    tls:
+      mode: ISTIO_MUTUAL
+  subsets:
+    - name: v1
+      labels:
+        version: v1
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: cart
+  namespace: retail-store-production
+spec:
+  host: cart
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 150
+    outlierDetection:
+      consecutive5xxErrors: 5
+      interval: 30s
+      baseEjectionTime: 60s
+    tls:
+      mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: checkout
+  namespace: retail-store-production
+spec:
+  host: checkout
+  trafficPolicy:
+    connectionPool:
+      tcp:
+        maxConnections: 300
+      http:
+        http1MaxPendingRequests: 300
+    outlierDetection:
+      consecutive5xxErrors: 3
+      interval: 10s
+      baseEjectionTime: 15s
+      maxEjectionPercent: 20
+    tls:
+      mode: ISTIO_MUTUAL

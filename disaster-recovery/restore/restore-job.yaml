@@ -1,0 +1,40 @@
+apiVersion: velero.io/v1
+kind: Restore
+metadata:
+  name: restore-staging-latest
+  namespace: velero
+  labels:
+    velero.io/restore-name: staging-restore
+spec:
+  backupName: daily-backup-staging-latest
+  excludedNamespaces:
+    - kube-system
+    - default
+  restorePVs: true
+  preserveNodePorts: true
+  namespaceMapping:
+    retail-store-staging: retail-store-staging-restored
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: verify-restore
+  namespace: velero
+spec:
+  template:
+    spec:
+      containers:
+        - name: verify
+          image: bitnami/kubectl:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Verifying restore..."
+              kubectl wait --for=condition=available --timeout=180s deployment/ui -n retail-store-staging
+              kubectl wait --for=condition=available --timeout=180s deployment/catalog -n retail-store-staging
+              curl -sf http://ui.retail-store-staging:8080/health || exit 1
+              echo "Restore verification complete"
+      restartPolicy: Never
+      serviceAccountName: velero-server
+      backoffLimit: 3

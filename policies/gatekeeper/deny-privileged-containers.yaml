@@ -1,0 +1,157 @@
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: denyprivilegedcontainers
+  annotations:
+    description: "Blocks privileged containers and containers running as root"
+    metadata.gatekeeper.sh/title: "Deny Privileged Containers"
+    metadata.gatekeeper.sh/version: "1.0.0"
+spec:
+  crd:
+    spec:
+      names:
+        kind: DenyPrivilegedContainers
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            exemptNamespaces:
+              type: array
+              items:
+                type: string
+            exemptImages:
+              type: array
+              items:
+                type: string
+            blockPrivileged:
+              type: boolean
+              default: true
+            blockRunAsRoot:
+              type: boolean
+              default: true
+            blockAllowPrivilegeEscalation:
+              type: boolean
+              default: true
+            blockRootUser:
+              type: boolean
+              default: true
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package denyprivilegedcontainers
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.containers[_]
+          not is_exempt(container, input.parameters)
+          input.parameters.blockPrivileged
+          container.securityContext.privileged == true
+          msg := sprintf("Container '%v' is privileged. Privileged containers are not allowed", [container.name])
+          details := {"container": container.name, "violation": "privileged"}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.initContainers[_]
+          not is_exempt(container, input.parameters)
+          input.parameters.blockPrivileged
+          container.securityContext.privileged == true
+          msg := sprintf("Init container '%v' is privileged. Privileged containers are not allowed", [container.name])
+          details := {"container": container.name, "violation": "privileged", "type": "initContainer"}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.containers[_]
+          not is_exempt(container, input.parameters)
+          input.parameters.blockAllowPrivilegeEscalation
+          container.securityContext.allowPrivilegeEscalation == true
+          msg := sprintf("Container '%v' allows privilege escalation. This is not allowed", [container.name])
+          details := {"container": container.name, "violation": "allowPrivilegeEscalation"}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.containers[_]
+          not is_exempt(container, input.parameters)
+          input.parameters.blockRunAsRoot
+          container.securityContext.runAsUser == 0
+          msg := sprintf("Container '%v' runs as root (uid 0). Running as root is not allowed", [container.name])
+          details := {"container": container.name, "violation": "runAsRoot", "uid": 0}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.containers[_]
+          not is_exempt(container, input.parameters)
+          input.parameters.blockRunAsRoot
+          not container.securityContext.runAsNonRoot
+          not pod_run_as_nonroot(input.review.object)
+          msg := sprintf("Container '%v' does not set runAsNonRoot=true. Containers must not run as root", [container.name])
+          details := {"container": container.name, "violation": "missingRunAsNonRoot"}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.containers[_]
+          not is_exempt(container, input.parameters)
+          input.parameters.blockRootUser
+          container.securityContext.runAsUser
+          container.securityContext.runAsUser < 1000
+          msg := sprintf("Container '%v' runs as uid %v which is below 1000. Must use uid >= 1000", [container.name, container.securityContext.runAsUser])
+          details := {"container": container.name, "violation": "lowUid", "uid": container.securityContext.runAsUser}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          input.review.object.spec.securityContext
+          input.parameters.blockRunAsRoot
+          input.review.object.spec.securityContext.runAsUser == 0
+          msg := "Pod runs as root (uid 0). Running as root is not allowed"
+          details := {"violation": "podRunAsRoot"}
+        }
+
+        pod_run_as_nonroot(obj) {
+          obj.spec.securityContext.runAsNonRoot == true
+        }
+
+        pod_run_as_nonroot(obj) {
+          obj.spec.securityContext.runAsUser
+          obj.spec.securityContext.runAsUser > 0
+        }
+
+        is_exempt(container, params) {
+          params.exemptContainers
+          params.exemptContainers[_] == container.name
+        }
+
+        is_exempt(container, params) {
+          params.exemptImages
+          image := container.image
+          params.exemptImages[_] == image
+        }
+
+        is_exempt(container, params) {
+          params.exemptNamespaces
+          params.exemptNamespaces[_] == input.review.namespace
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: DenyPrivilegedContainers
+metadata:
+  name: deny-privileged-containers
+  annotations:
+    description: "Block privileged containers, root users, and privilege escalation"
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+      - apiGroups: ["apps"]
+        kinds: ["Deployment", "DaemonSet", "StatefulSet", "ReplicaSet"]
+      - apiGroups: ["batch"]
+        kinds: ["Job", "CronJob"]
+    excludedNamespaces:
+      - kube-system
+      - gatekeeper-system
+      - istio-system
+      - amazon-cloudwatch
+      - aws-node
+  parameters:
+    blockPrivileged: true
+    blockRunAsRoot: true
+    blockAllowPrivilegeEscalation: true
+    blockRootUser: true

@@ -1,0 +1,522 @@
+kube-prometheus-stack:
+  # Global settings
+  global:
+    rbac:
+      create: true
+      pspEnabled: false
+  
+  # Common labels
+  commonLabels:
+    app.kubernetes.io/part-of: retail-store
+  
+  # Alertmanager configuration
+  alertmanager:
+    alertmanagerSpec:
+      replicas: 3
+      logLevel: info
+      externalUrl: https://alertmanager.retail-store.example.com
+      routePrefix: /
+      retention: 120h
+      storage:
+        volumeClaimTemplate:
+          spec:
+            storageClassName: gp3
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 10Gi
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: alertmanager
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+    
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+  
+  alertmanagerPspsEnabled: false
+  
+  # Grafana configuration
+  grafana:
+    enabled: true
+    replicas: 2
+    adminPassword: null
+    admin:
+      existingSecret: grafana-admin-credentials
+      userKey: user
+      passwordKey: password
+    
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+    
+    ingress:
+      enabled: true
+      ingressClassName: alb
+      annotations:
+        kubernetes.io/ingress.class: alb
+        alb.ingress.kubernetes.io/scheme: internal
+        alb.ingress.kubernetes.io/target-type: ip
+        alb.ingress.kubernetes.io/scheme: internal
+        alb.ingress.kubernetes.io/healthcheck-path: /api/health
+        alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS":443}]'
+        alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:us-east-1:ACCOUNT_ID:certificate/cert-id
+      hosts:
+        - grafana.retail-store.example.com
+      tls:
+        - hosts:
+            - grafana.retail-store.example.com
+    
+    resources:
+      requests:
+        cpu: 200m
+        memory: 512Mi
+      limits:
+        cpu: 1000m
+        memory: 2Gi
+    
+    persistence:
+      enabled: true
+      storageClassName: gp3
+      accessModes:
+        - ReadWriteOnce
+      size: 10Gi
+    
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 472
+      runAsGroup: 472
+      fsGroup: 472
+    
+    affinity:
+      podAntiAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: grafana
+              topologyKey: kubernetes.io/hostname
+    
+    grafana.ini:
+      server:
+        root_url: https://grafana.retail-store.example.com
+        enable_gzip: true
+      database:
+        type: postgres
+        host: grafana-db.example.com:5432
+        name: grafana
+        user: grafana
+        password: ${GRAFANA_DB_PASSWORD}
+        ssl_mode: require
+      analytics:
+        check_for_updates: false
+        reporting_enabled: false
+      auth:
+        disable_login_form: false
+      auth.github:
+        enabled: true
+        allow_sign_up: true
+        client_id: ${GITHUB_CLIENT_ID}
+        client_secret: ${GITHUB_CLIENT_SECRET}
+        scopes: user:email,read:org
+        auth_url: https://github.com/login/oauth/authorize
+        token_url: https://github.com/login/oauth/access_token
+        api_url: https://api.github.com/user
+        allowed_organizations: retail-store
+        team_ids:
+          - TEAM_ID
+      dataproxy:
+        timeout: 60
+        send_user_header: true
+      users:
+        auto_assign_org: true
+        auto_assign_org_role: Editor
+        default_theme: dark
+      dashboards:
+        default_home_dashboard_path: /var/lib/grafana/dashboards/retail-store/retail-store-overview.json
+        versions_to_keep: 20
+      unified_alerting:
+        enabled: true
+        execute_alerts: true
+      alerting:
+        enabled: true
+      
+    sidecar:
+      dashboards:
+        enabled: true
+        label: grafana_dashboard
+        labelValue: "1"
+        searchNamespace: ALL
+        folder: /var/lib/grafana/dashboards
+        folderAnnotation: grafana_dashboard_folder
+        provider:
+          foldersFromFilesStructure: true
+      datasources:
+        enabled: true
+        label: grafana_datasource
+        labelValue: "1"
+        searchNamespace: ALL
+    
+    extraDatasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus-operated.monitoring.svc:9090
+        isDefault: true
+        jsonData:
+          httpMethod: POST
+          manageAlerts: true
+          prometheusType: Prometheus
+          prometheusVersion: "2.48.0"
+      - name: Loki
+        type: loki
+        access: proxy
+        url: http://loki.monitoring.svc:3100
+        jsonData:
+          maxLines: 1000
+          derivedFields:
+            - name: TraceID
+              matcherRegex: '"traceId":"(\w+)"'
+              url: 'https://jaeger.retail-store.example.com/trace/$${__value.raw}'
+              datasourceUid: tempo
+      - name: Alertmanager
+        type: alertmanager
+        access: proxy
+        url: http://alertmanager-operated.monitoring.svc:9093
+        jsonData:
+          implementation: prometheus
+          handleGrafanaManagedAlerts: true
+  
+  # kube-state-metrics
+  kube-state-metrics:
+    enabled: true
+    replicas: 2
+    resources:
+      requests:
+        cpu: 100m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    selfMonitor:
+      enabled: true
+    
+    metricLabelsAllowlist:
+      - deployments=[app.kubernetes.io/name,app.kubernetes.io/component]
+      - pods=[app.kubernetes.io/name,app.kubernetes.io/component]
+    
+    metricAnnotationsAllowList:
+      - deployments=[prometheus.io/scrape,prometheus.io/port,prometheus.io/path]
+      - pods=[prometheus.io/scrape,prometheus.io/port,prometheus.io/path]
+  
+  kube-state-metricsPspsEnabled: false
+  
+  # Prometheus node exporter
+  prometheus-node-exporter:
+    enabled: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 50Mi
+      limits:
+        cpu: 200m
+        memory: 100Mi
+    service:
+      portName: metrics
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+  
+  nodeExporterPspsEnabled: false
+  
+  # Prometheus configuration
+  prometheus:
+    prometheusSpec:
+      replicas: 2
+      logLevel: info
+      retention: 15d
+      retentionSize: 50GB
+      externalUrl: https://prometheus.retail-store.example.com
+      routePrefix: /
+      
+      enableAdminAPI: true
+      enableFeatures:
+        - exemplar-storage
+        - remote-write-receiver
+      
+      scrapeInterval: 15s
+      scrapeTimeout: 10s
+      evaluationInterval: 15s
+      
+      storageSpec:
+        volumeClaimTemplate:
+          spec:
+            storageClassName: gp3
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 100Gi
+      
+      resources:
+        requests:
+          cpu: 500m
+          memory: 2Gi
+        limits:
+          cpu: 2000m
+          memory: 8Gi
+      
+      serviceAccountName: prometheus
+      serviceMonitorSelectorNilUsesHelmValues: false
+      podMonitorSelectorNilUsesHelmValues: false
+      ruleSelectorNilUsesHelmValues: false
+      
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: prometheus
+                topologyKey: kubernetes.io/hostname
+      
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+      
+      containers:
+        - name: prometheus
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: 2000m
+              memory: 8Gi
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: web
+            periodSeconds: 5
+            timeoutSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /-/healthy
+              port: web
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 3
+      
+      serviceMonitorSelector:
+        matchLabels:
+          release: kube-prometheus-stack
+      
+      podMonitorSelector:
+        matchLabels:
+          release: kube-prometheus-stack
+      
+      ruleSelector:
+        matchLabels:
+          release: kube-prometheus-stack
+      
+      additionalAlertRelabelConfigs:
+        - action: labeldrop
+          regex: (prometheus_replica)
+      
+      additionalAlertAlertmanagerSpec:
+        nameOverride: alertmanager
+      
+      remoteWrite:
+        - url: https://aps-workspaces.us-east-1.amazonaws.com/workspaces/WORKSPACE_ID/api/v1/remote_write
+          sigv4:
+            region: us-east-1
+            roleArn: arn:aws:iam::ACCOUNT_ID:role/PrometheusRemoteWriteRole
+          writeRelabelConfigs:
+            - sourceLabels: [__name__]
+              regex: 'retail_.*|istio_.*|container_.*|kube_.*|node_.*'
+              action: keep
+      
+      additionalScrapeConfigs:
+        - job_name: 'retail-store-services'
+          kubernetes_sd_configs:
+            - role: endpoints
+              namespaces:
+                names:
+                  - retail-store
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+              action: keep
+              regex: true
+            - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+              action: replace
+              target_label: __metrics_path__
+              regex: (.+)
+            - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+              action: replace
+              regex: ([^:]+)(?::\d+)?;(\d+)
+              replacement: $1:$2
+              target_label: __address__
+            - action: labelmap
+              regex: __meta_kubernetes_service_label_(.+)
+            - source_labels: [__meta_kubernetes_namespace]
+              action: replace
+              target_label: namespace
+        - job_name: 'istio-control-plane'
+          kubernetes_sd_configs:
+            - role: endpoints
+              namespaces:
+                names:
+                  - istio-system
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_service_name]
+              regex: istiod
+              action: keep
+    
+    serviceMonitor:
+      enabled: true
+      selfMonitor: true
+      interval: 30s
+    
+    prometheusPspsEnabled: false
+  
+  # Thanos Sidecar for long-term storage
+  prometheusThanos:
+    enabled: true
+    objectStorageConfig:
+      existingSecret:
+        name: thanos-object-storage
+        key: object-store.yaml
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+  
+  # Service Monitor for retail-store applications
+  additionalServiceMonitors:
+    - name: retail-store-metrics
+      namespaceSelector:
+        any: true
+      selector:
+        matchLabels:
+          app.kubernetes.io/part-of: retail-store
+      endpoints:
+        - port: http
+          path: /actuator/prometheus
+          interval: 30s
+          scrapeTimeout: 10s
+        - port: http
+          path: /metrics
+          interval: 30s
+          scrapeTimeout: 10s
+  
+  # Pod Monitors
+  additionalPodMonitors: []
+  
+  # Prometheus Operator
+  prometheusOperator:
+    enabled: true
+    replicas: 2
+    logLevel: info
+    
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    
+    admissionWebhooks:
+      enabled: true
+      patch:
+        enabled: true
+      failurePolicy: Fail
+    
+    kubeletService:
+      enabled: true
+      namespace: monitoring
+    
+    tls:
+      enabled: false
+    admissionWebhooks:
+      enabled: false
+  prometheusOperatorPspsEnabled: false
+  # kubelet service
+  kubelet:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      cAdvisorMetrics: true
+      probes: true
+      interval: 30s
+  
+ # kube-proxy
+  kubeProxy:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+  
+  
+  # kube-apiserver
+  kubeApiServer:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+  
+  
+  # kube-controller-manager
+  kubeControllerManager:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+  
+  
+  # kube-scheduler
+  kubeScheduler:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+  
+  
+  # kube-etcd
+  kubeEtcd:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+  
+  
+  # coreDNS
+  coreDns:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      interval: 30s

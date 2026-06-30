@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ./gatekeeper
+  - ./network-policies
+  - ./pod-security
+  - ./rbac
+
+commonLabels:
+  app.kubernetes.io/name: security-policies
+  app.kubernetes.io/part-of: retail-store
+  app.kubernetes.io/component: security
+
+commonAnnotations:
+  security.retail-store.io/managed-by: kustomize

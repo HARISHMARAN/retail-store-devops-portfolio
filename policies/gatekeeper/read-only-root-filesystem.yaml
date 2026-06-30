@@ -1,0 +1,75 @@
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: readonlyrootfilesystem
+  annotations:
+    description: "Requires containers to use a read-only root filesystem"
+    metadata.gatekeeper.sh/title: "Read-Only Root Filesystem"
+    metadata.gatekeeper.sh/version: "1.0.0"
+spec:
+  crd:
+    spec:
+      names:
+        kind: ReadOnlyRootFilesystem
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            exemptNamespaces:
+              type: array
+              items:
+                type: string
+            exemptContainers:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package readonlyrootfilesystem
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.containers[_]
+          not is_exempt(container, input.parameters)
+          not container.securityContext.readOnlyRootFilesystem == true
+          msg := sprintf("Container '%v' does not have a read-only root filesystem. Set securityContext.readOnlyRootFilesystem: true", [container.name])
+          details := {"container": container.name}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.initContainers[_]
+          not is_exempt(container, input.parameters)
+          not container.securityContext.readOnlyRootFilesystem == true
+          msg := sprintf("Init container '%v' does not have a read-only root filesystem. Set securityContext.readOnlyRootFilesystem: true", [container.name])
+          details := {"container": container.name, "type": "initContainer"}
+        }
+
+        is_exempt(container, params) {
+          params.exemptContainers
+          params.exemptContainers[_] == container.name
+        }
+
+        is_exempt(container, params) {
+          params.exemptNamespaces
+          params.exemptNamespaces[_] == input.review.namespace
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: ReadOnlyRootFilesystem
+metadata:
+  name: read-only-root-filesystem-production
+  annotations:
+    description: "Production containers must use read-only root filesystems"
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+      - apiGroups: ["apps"]
+        kinds: ["Deployment", "DaemonSet", "StatefulSet", "ReplicaSet"]
+      - apiGroups: ["batch"]
+        kinds: ["Job", "CronJob"]
+    namespaces:
+      - production
+      - prod
+  parameters: {}

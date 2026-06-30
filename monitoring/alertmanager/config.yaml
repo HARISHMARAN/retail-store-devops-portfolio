@@ -1,0 +1,407 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config-full
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alertmanager
+data:
+  alertmanager.yml: |
+    global:
+      resolve_timeout: 5m
+      
+      smtp_smarthost: 'smtp.example.com:587'
+      smtp_from: 'alerts@retail-store.example.com'
+      smtp_auth_username: 'alerts@retail-store.example.com'
+      smtp_require_tls: true
+      
+      slack_api_url_file: '/etc/alertmanager/secrets/slack_api_url'
+      
+      pagerduty_url_file: '/etc/alertmanager/secrets/pagerduty_url'
+    
+    templates:
+      - '/etc/alertmanager/templates/default.tmpl'
+      - '/etc/alertmanager/templates/slack.tmpl'
+      - '/etc/alertmanager/templates/email.tmpl'
+    
+    route:
+      group_by: ['alertname', 'namespace', 'service', 'severity']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: 'default'
+      
+      routes:
+        - match:
+            severity: critical
+          receiver: 'critical-alerts'
+          group_wait: 10s
+          group_interval: 1m
+          repeat_interval: 1h
+          continue: true
+        
+        - match:
+            severity: warning
+          receiver: 'warning-alerts'
+          group_wait: 5m
+          group_interval: 10m
+          repeat_interval: 4h
+          continue: true
+        
+        - match:
+            severity: info
+          receiver: 'info-alerts'
+          group_wait: 10m
+          group_interval: 1h
+          repeat_interval: 24h
+        
+        - match:
+            alertname: HighErrorRate
+          receiver: 'critical-alerts'
+          group_wait: 30s
+          group_interval: 2m
+          repeat_interval: 30m
+          routes:
+            - match:
+                service: checkout
+              receiver: 'business-critical'
+              group_wait: 10s
+              repeat_interval: 15m
+        
+        - match:
+            alertname: HighLatencyP99
+          receiver: 'critical-alerts'
+          group_wait: 30s
+          group_interval: 2m
+          repeat_interval: 30m
+        
+        - match:
+            alertname: PodCrashLooping
+          receiver: 'critical-alerts'
+          group_wait: 30s
+          group_interval: 2m
+          repeat_interval: 1h
+        
+        - match:
+            alertname: ServiceUnavailable
+          receiver: 'critical-alerts'
+          group_wait: 10s
+          group_interval: 1m
+          repeat_interval: 15m
+        
+        - match:
+            alertname: NodeNotReady
+          receiver: 'infrastructure-critical'
+          group_wait: 1m
+          group_interval: 5m
+          repeat_interval: 1h
+        
+        - match:
+            alertname: HighCPUUsage
+          receiver: 'infrastructure-warning'
+          group_wait: 5m
+          group_interval: 10m
+          repeat_interval: 2h
+        
+        - match:
+            alertname: HighMemoryUsage
+          receiver: 'infrastructure-warning'
+          group_wait: 5m
+          group_interval: 10m
+          repeat_interval: 2h
+        
+        - match:
+            alertname: checkoutSuccessRateLow
+          receiver: 'business-critical'
+          group_wait: 5m
+          group_interval: 10m
+          repeat_interval: 1h
+        
+        - match:
+            alertname: HighCartAbandonment
+          receiver: 'business-warning'
+          group_wait: 30m
+          group_interval: 1h
+          repeat_interval: 4h
+        
+        - match:
+            team: platform
+          receiver: 'platform-team'
+          group_wait: 5m
+          repeat_interval: 2h
+        
+        - match:
+            team: business
+          receiver: 'business-team'
+          group_wait: 10m
+          repeat_interval: 4h
+    
+    inhibit_rules:
+      - source_match:
+          severity: critical
+        target_match:
+          severity: warning
+        equal: ['alertname', 'namespace', 'service']
+        
+      - source_match:
+          severity: critical
+        target_match_re:
+          severity: info|warning
+        equal: ['namespace']
+        
+      - source_match:
+          alertname: ServiceUnavailable
+        target_match:
+          alertname: HighErrorRate
+        equal: ['namespace', 'service']
+        
+      - source_match:
+          alertname: NodeNotReady
+        target_match_re:
+          alertname: PodCrashLooping|ServiceUnavailable
+        equal: ['node']
+        
+      - source_match:
+          alertname: HighErrorRate
+        target_match:
+          alertname: ModerateErrorRate
+        equal: ['namespace', 'service']
+        
+      - source_match:
+          alertname: CriticalErrorBudgetBurnRate
+        target_match:
+          alertname: ErrorBudgetExhausted
+        equal: []
+    
+    receivers:
+      - name: 'default'
+        webhook_configs:
+          - url: 'http://alertmanager-webhook.monitoring.svc:5001/webhook'
+            send_resolved: true
+            max_alerts: 100
+        
+        slack_configs:
+          - channel: '#alerts-general'
+            send_resolved: true
+            username: 'AlertManager'
+            icon_emoji: ':rotating_light:'
+            color: '{{ if eq .Status "firing" }}{{ if eq .CommonLabels.severity "critical" }}danger{{ else if eq .CommonLabels.severity "warning" }}warning{{ else }}#439FE0{{ end }}{{ else }}good{{ end }}'
+            title: '[{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .CommonLabels.severity | toUpper }}{{ end }}] {{ .CommonLabels.alertname }}'
+            title_link: 'https://grafana.retail-store.example.com'
+            text: |-
+              {{ range .Alerts }}
+              *Alert:* {{ .Labels.alertname }}
+              *Service:* {{ .Labels.service }}
+              *Namespace:* {{ .Labels.namespace }}
+              *Description:* {{ .Annotations.description }}
+              *Details:*
+              {{ range .Labels.SortedPairs }} • *{{ .Name }}:* {{ .Value }}
+              {{ end }}
+              {{ end }}
+            fallback: '{{ .CommonLabels.alertname }} - {{ .CommonLabels.severity }}'
+            footer: 'Retail Store Monitoring'
+            actions:
+              - type: button
+                text: 'View in Grafana'
+                url: 'https://grafana.retail-store.example.com/d/retail-store-overview'
+              - type: button
+                text: 'Runbook'
+                url: '{{ (index .Alerts 0).Annotations.runbook_url }}'
+                style: primary
+      
+      - name: 'critical-alerts'
+        slack_configs:
+          - channel: '#critical-alerts'
+            send_resolved: true
+            username: 'AlertManager - CRITICAL'
+            icon_emoji: ':bangbang:'
+            color: 'danger'
+            title: ':rotating_light: [CRITICAL] {{ .CommonLabels.alertname }}'
+            title_link: 'https://grafana.retail-store.example.com/d/retail-store-overview'
+            text: |-
+              {{ range .Alerts }}
+              *🚨 Alert:* {{ .Labels.alertname }}
+              *Service:* {{ .Labels.service }}
+              *Namespace:* {{ .Labels.namespace }}
+              *Severity:* {{ .Labels.severity }}
+              *Description:* {{ .Annotations.description }}
+              *Started:* {{ .StartsAt.Format "2006-01-02 15:04:05 MST" }}
+              {{ if .Annotations.runbook_url }}*Runbook:* {{ .Annotations.runbook_url }}{{ end }}
+              {{ end }}
+            fallback: 'CRITICAL: {{ .CommonLabels.alertname }}'
+            footer: 'Retail Store Monitoring'
+            actions:
+              - type: button
+                text: 'Runbook'
+                url: '{{ (index .Alerts 0).Annotations.runbook_url }}'
+                style: danger
+              - type: button
+                text: 'Acknowledge'
+                url: 'https://alertmanager.retail-store.example.com/#/silences/new?filter=%7Balertname%3D%22{{ .CommonLabels.alertname }}%22%2Cnamespace%3D%22{{ .CommonLabels.namespace }}%22%7D'
+              - type: button
+                text: 'Grafana'
+                url: 'https://grafana.retail-store.example.com'
+        
+        pagerduty_configs:
+          - service_key_file: '/etc/alertmanager/secrets/pagerduty_service_key'
+            severity: critical
+            description: '[CRITICAL] {{ .CommonLabels.alertname }}'
+            client: 'AlertManager'
+            client_url: 'https://alertmanager.retail-store.example.com'
+            details:
+              firing: '{{ template "pagerduty.default.instances" .Alerts }}'
+              num_firing: '{{ .Alerts | len }}'
+              namespace: '{{ .CommonLabels.namespace }}'
+              service: '{{ .CommonLabels.service }}'
+              description: '{{ (index .Alerts 0).Annotations.description }}'
+              runbook: '{{ (index .Alerts 0).Annotations.runbook_url }}'
+              grafana: 'https://grafana.retail-store.example.com/d/retail-store-overview'
+      
+      - name: 'warning-alerts'
+        slack_configs:
+          - channel: '#alerts-warnings'
+            send_resolved: true
+            username: 'AlertManager'
+            icon_emoji: ':warning:'
+            color: 'warning'
+            title: '[WARNING] {{ .CommonLabels.alertname }}'
+            title_link: 'https://grafana.retail-store.example.com'
+            text: |-
+              {{ range .Alerts }}
+              *Alert:* {{ .Labels.alertname }}
+              *Service:* {{ .Labels.service }}
+              *Description:* {{ .Annotations.description }}
+              {{ end }}
+            fallback: 'WARNING: {{ .CommonLabels.alertname }}'
+        
+        email_configs:
+          - to: 'team@example.com'
+            send_resolved: true
+            html: '{{ template "email.default.html" . }}'
+            subject: '[WARNING] {{ .CommonLabels.alertname }}'
+            headers:
+              Importance: high
+      
+      - name: 'info-alerts'
+        email_configs:
+          - to: 'reports@example.com'
+            send_resolved: true
+            html: '{{ template "email.default.html" . }}'
+            subject: '[INFO] {{ .CommonLabels.alertname }}'
+          - to: 'daily-report@example.com'
+            send_resolved: false
+            html: '{{ template "email.default.html" . }}'
+            subject: 'Daily Report - {{ .CommonLabels.alertname }}'
+      
+      - name: 'platform-team'
+        slack_configs:
+          - channel: '#platform-team'
+            send_resolved: true
+            username: 'AlertManager'
+            text: |-
+              Platform Team Alert
+              {{ range .Alerts }}
+              • {{ .Labels.alertname }}: {{ .Annotations.description }}
+              {{ end }}
+      
+      - name: 'platform-oncall'
+        pagerduty_configs:
+          - service_key_file: '/etc/alertmanager/secrets/pagerduty_platform_key'
+            severity: critical
+            description: '[PLATFORM] {{ .CommonLabels.alertname }}'
+        
+        slack_configs:
+          - channel: '#platform-oncall'
+            send_resolved: true
+            username: 'AlertManager - PLATFORM ONCALL'
+            color: 'danger'
+            title: ':pager: [PLATFORM ONCALL] {{ .CommonLabels.alertname }}'
+            text: '{{ template "slack.text" . }}'
+      
+      - name: 'business-team'
+        slack_configs:
+          - channel: '#business-team'
+            send_resolved: true
+            username: 'AlertManager'
+            text: |-
+              Business Team Alert
+              {{ range .Alerts }}
+              • {{ .Labels.alertname }}: {{ .Annotations.description }}
+              {{ end }}
+      
+      - name: 'infrastructure-critical'
+        slack_configs:
+          - channel: '#infrastructure-critical'
+            send_resolved: true
+            username: 'AlertManager - INFRA'
+            color: 'danger'
+            title: ':computer: [INFRA CRITICAL] {{ .CommonLabels.alertname }}'
+            text: |-
+              Infrastructure Alert
+              {{ range .Alerts }}
+              • Node: {{ .Labels.node }}
+              • Description: {{ .Annotations.description }}
+              {{ end }}
+        
+        pagerduty_configs:
+          - service_key_file: '/etc/alertmanager/secrets/pagerduty_infra_key'
+            severity: critical
+            description: '[INFRA] {{ .CommonLabels.alertname }}'
+      
+      - name: 'infrastructure-warning'
+        slack_configs:
+          - channel: '#infrastructure-warnings'
+            send_resolved: true
+            username: 'AlertManager - INFRA'
+            color: 'warning'
+            title: '[INFRA WARNING] {{ .CommonLabels.alertname }}'
+            text: '{{ template "slack.text" . }}'
+      
+      - name: 'business-critical'
+        pagerduty_configs:
+          - service_key_file: '/etc/alertmanager/secrets/pagerduty_business_key'
+            severity: critical
+            description: '[BUSINESS] {{ .CommonLabels.alertname }}'
+        
+        slack_configs:
+          - channel: '#business-critical'
+            send_resolved: true
+            username: 'AlertManager - BUSINESS'
+            color: 'danger'
+            title: ':moneybag: [BUSINESS CRITICAL] {{ .CommonLabels.alertname }}'
+            text: |-
+              Business Critical Alert
+              {{ range .Alerts }}
+              • Alert: {{ .Labels.alertname }}
+              • Description: {{ .Annotations.description }}
+              • Impact: Potential revenue impact
+              {{ end }}
+            actions:
+              - type: button
+                text: 'Business Dashboard'
+                url: 'https://grafana.retail-store.example.com/d/business-metrics'
+      
+      - name: 'business-warning'
+        slack_configs:
+          - channel: '#business-warnings'
+            send_resolved: true
+            username: 'AlertManager - BUSINESS'
+            color: 'warning'
+            title: '[BUSINESS WARNING] {{ .CommonLabels.alertname }}'
+            text: '{{ template "slack.text" . }}'
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: alertmanager-secrets
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: alertmanager
+type: Opaque
+stringData:
+  slack_api_url: "https://hooks.slack.com/services/XXXXXXXXX/XXXXXXXXX/XXXXXXXXX"
+  pagerduty_service_key: "your-pagerduty-service-key"
+  pagerduty_platform_key: "your-pagerduty-platform-key"
+  pagerduty_business_key: "your-pagerduty-business-key"
+  pagerduty_infra_key: "your-pagerduty-infra-key"
+  smtp_password: "your-smtp-password"

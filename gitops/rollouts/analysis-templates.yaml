@@ -1,0 +1,91 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: success-rate
+  namespace: retail-store-production
+spec:
+  args:
+    - name: service-name
+  metrics:
+    - name: success-rate
+      interval: 30s
+      count: 5
+      successCondition: result[0] > 0.99
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring:9090
+          query: |
+            sum(rate(http_requests_total{service="{{args.service-name}}", status!~"5.."}[30s]))
+            /
+            sum(rate(http_requests_total{service="{{args.service-name}}"}[30s]))
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: latency-p99
+  namespace: retail-store-production
+spec:
+  args:
+    - name: service-name
+  metrics:
+    - name: latency-p99
+      interval: 30s
+      count: 5
+      successCondition: result[0] < 500
+      failureCondition: result[0] >= 1000
+      failureLimit: 1
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring:9090
+          query: |
+            histogram_quantile(0.99,
+              sum(rate(http_request_duration_seconds_bucket{service="{{args.service-name}}"}[30s])) by (le)
+            ) * 1000
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: validation-checks
+  namespace: retail-store-production
+spec:
+  metrics:
+    - name: checkout-success
+      interval: 15s
+      count: 3
+      successCondition: result[0] > 0.95
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring:9090
+          query: |
+            sum(rate(checkout_completed_total[30s])) / sum(rate(checkout_started_total[30s]))
+    - name: error-rate-check
+      interval: 15s
+      count: 3
+      successCondition: result[0] < 0.01
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring:9090
+          query: |
+            sum(rate(http_requests_total{status=~"5.."}[30s])) / sum(rate(http_requests_total[30s]))
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisRun
+metadata:
+  name: example-analysis-run
+  namespace: retail-store-production
+spec:
+  args:
+    - name: service-name
+      value: ui
+  metrics:
+    - name: success-rate
+      interval: 30s
+      count: 5
+      successCondition: result[0] > 0.99
+      provider:
+        prometheus:
+          address: http://prometheus.monitoring:9090
+          query: |
+            sum(rate(http_requests_total{service="ui", status!~"5.."}[30s]))
+            /
+            sum(rate(http_requests_total{service="ui"}[30s]))

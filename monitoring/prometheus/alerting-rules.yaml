@@ -1,0 +1,453 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-alerting-rules
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: prometheus
+    prometheus: kube-prometheus
+    role: alerting-rules
+data:
+  alerting-rules.yaml: |
+    groups:
+      # Critical alerts - immediate response required
+      - name: critical.alerts
+        rules:
+          # High error rate alert
+          - alert: HighErrorRate
+            expr: |
+              (sum(rate(http_server_requests_seconds_count{job=~"retail-store-.*",status=~"5.."}[5m]))
+              /
+              sum(rate(http_server_requests_seconds_count{job=~"retail-store-.*"}[5m]))) * 100 > 1
+            for: 5m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "High error rate detected"
+              description: "Error rate is {{ $value | printf \"%.2f\" }}% which is above the 1% threshold. Service(s): {{ $labels.service }}"
+              runbook_url: "https://runbooks.retail-store.example.com/high-error-rate"
+              
+          # High latency alert (p99)
+          - alert: HighLatencyP99
+            expr: |
+              histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{job=~"retail-store-.*"}[5m])) by (service, le)) > 0.5
+            for: 5m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "High p99 latency detected"
+              description: "p99 latency is {{ $value | humanizeDuration }} for service {{ $labels.service }}, which exceeds the 500ms threshold"
+              runbook_url: "https://runbooks.retail-store.example.com/high-latency"
+              
+          # Pod crash looping
+          - alert: PodCrashLooping
+            expr: |
+              max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff",namespace="retail-store"}[5m]) == 1
+            for: 5m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "Pod {{ $labels.pod }} is crash looping"
+              description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} has been in CrashLoopBackOff for more than 5 minutes"
+              runbook_url: "https://runbooks.retail-store.example.com/pod-crash-loop"
+              
+          # Service unavailable
+          - alert: ServiceUnavailable
+            expr: |
+              kube_service_status_spec_clusterip{namespace="retail-store",service=~"ui|catalog|cart|orders|checkout"} == 0
+            for: 2m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "Service {{ $labels.service }} is unavailable"
+              description: "Service {{ $labels.service }} in namespace {{ $labels.namespace }} does not have endpoints"
+              runbook_url: "https://runbooks.retail-store.example.com/service-unavailable"
+              
+          # No healthy instances
+          - alert: NoHealthyInstances
+            expr: |
+              count(up{job=~"retail-store-.*"} == 1) < 1
+            for: 2m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "No healthy instances for retail-store services"
+              description: "All instances of retail-store services are down"
+              runbook_url: "https://runbooks.retail-store.example.com/no-healthy-instances"
+              
+          # High CPU usage
+          - alert: HighCPUUsage
+            expr: |
+              (sum(rate(container_cpu_usage_seconds_total{namespace="retail-store"}[5m])) by (pod)
+              /
+              sum(kube_pod_container_resource_limits{resource="cpu",namespace="retail-store"}) by (pod)) * 100 > 90
+            for: 10m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "High CPU usage on pod {{ $labels.pod }}"
+              description: "CPU usage is {{ $value | printf \"%.1f\" }}% which is above 90% threshold"
+              runbook_url: "https://runbooks.retail-store.example.com/high-cpu"
+              
+          # High memory usage
+          - alert: HighMemoryUsage
+            expr: |
+              (sum(container_memory_working_set_bytes{namespace="retail-store"}) by (pod)
+              /
+              sum(kube_pod_container_resource_limits{resource="memory",namespace="retail-store"}) by (pod)) * 100 > 90
+            for: 5m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "High memory usage on pod {{ $labels.pod }}"
+              description: "Memory usage is {{ $value | printf \"%.1f\" }}% which is above 90% threshold"
+              runbook_url: "https://runbooks.retail-store.example.com/high-memory"
+              
+          # Disk pressure
+          - alert: NodeDiskPressure
+            expr: kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+            for: 5m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "Node {{ $labels.node }} has disk pressure"
+              description: "Node {{ $labels.node }} is experiencing disk pressure"
+              runbook_url: "https://runbooks.retail-store.example.com/node-disk-pressure"
+              
+          # Memory pressure
+          - alert: NodeMemoryPressure
+            expr: kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
+            for: 5m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "Node {{ $labels.node }} has memory pressure"
+              description: "Node {{ $labels.node }} is experiencing memory pressure"
+              runbook_url: "https://runbooks.retail-store.example.com/node-memory-pressure"
+
+      # Warning alerts - monitor and investigate
+      - name: warning.alerts
+        rules:
+          # Moderate error rate
+          - alert: ModerateErrorRate
+            expr: |
+              (sum(rate(http_server_requests_seconds_count{job=~"retail-store-.*",status=~"5.."}[5m]))
+              /
+              sum(rate(http_server_requests_seconds_count{job=~"retail-store-.*"}[5m]))) * 100 > 0.5
+            for: 10m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "Moderate error rate detected"
+              description: "Error rate is {{ $value | printf \"%.2f\" }}% which is above the 0.5% threshold"
+              runbook_url: "https://runbooks.retail-store.example.com/moderate-error-rate"
+              
+          # Moderate latency
+          - alert: ModerateLatencyP99
+            expr: |
+              histogram_quantile(0.99, sum(rate(http_server_requests_seconds_bucket{job=~"retail-store-.*"}[10m])) by (service, le)) > 0.3
+            for: 10m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "Moderate p99 latency detected"
+              description: "p99 latency is {{ $value | humanizeDuration }} for service {{ $labels.service }}"
+              runbook_url: "https://runbooks.retail-store.example.com/moderate-latency"
+              
+          # Pod restarts
+          - alert: PodRestartingFrequently
+            expr: |
+              increase(kube_pod_container_status_restarts_total{namespace="retail-store"}[1h]) > 5
+            for: 5m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "Pod {{ $labels.pod }} is restarting frequently"
+              description: "Pod {{ $labels.pod }} has restarted {{ $value }} times in the last hour"
+              runbook_url: "https://runbooks.retail-store.example.com/pod-restarts"
+              
+          # Resource limits approaching
+          - alert: ResourceLimitsApproaching
+            expr: |
+              (sum(rate(container_cpu_usage_seconds_total{namespace="retail-store"}[10m])) by (pod)
+              /
+              sum(kube_pod_container_resource_limits{resource="cpu",namespace="retail-store"}) by (pod)) * 100 > 70
+            for: 15m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "Pod {{ $labels.pod }} approaching CPU limits"
+              description: "CPU usage is {{ $value | printf \"%.1f\" }}% of limits"
+              runbook_url: "https://runbooks.retail-store.example.com/resource-limits"
+              
+          # HPA at max replicas
+          - alert: HPAAtMaxReplicas
+            expr: kube_hpa_status_current_replicas{namespace="retail-store"} == kube_hpa_spec_max_replicas{namespace="retail-store"}
+            for: 10m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "HPA {{ $labels.hpa }} is at max replicas"
+              description: "HPA {{ $labels.hpa }} has reached max replicas and cannot scale further"
+              runbook_url: "https://runbooks.retail-store.example.com/hpa-max-replicas"
+              
+          # PVC usage high
+          - alert: PVCUsageHigh
+            expr: |
+              (kubelet_volume_stats_used_bytes{namespace="retail-store"} / kubelet_volume_stats_capacity_bytes{namespace="retail-store"}) * 100 > 80
+            for: 10m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "PVC {{ $labels.persistentvolumeclaim }} usage is high"
+              description: "PVC {{ $labels.persistentvolumeclaim }} is using {{ $value | printf \"%.1f\" }}% of its capacity"
+              runbook_url: "https://runbooks.retail-store.example.com/pvc-usage"
+
+      # Business metrics alerts
+      - name: business.alerts
+        rules:
+          # Checkout success rate low
+          - alert: CheckoutSuccessRateLow
+            expr: |
+              (sum(rate(checkout_completed_total{job="retail-store-checkout"}[5m]))
+              /
+              sum(rate(checkout_started_total{job="retail-store-checkout"}[5m]))) * 100 < 90
+            for: 10m
+            labels:
+              severity: critical
+              team: business
+            annotations:
+              summary: "Checkout success rate is low"
+              description: "Checkout success rate is {{ $value | printf \"%.1f\" }}%, which is below the 90% threshold"
+              runbook_url: "https://runbooks.retail-store.example.com/checkout-success-rate"
+              
+          # High cart abandonment
+          - alert: HighCartAbandonment
+            expr: |
+              (sum(increase(orders_failed_total{job="retail-store-cart"}[1h]))
+              /
+              sum(increase(cart_created_total{job="retail-store-cart"}[1h]))) * 100 > 50
+            for: 30m
+            labels:
+              severity: warning
+              team: business
+            annotations:
+              summary: "High cart abandonment rate"
+              description: "Cart abandonment rate is {{ $value | printf \"%.1f\" }}%"
+              runbook_url: "https://runbooks.retail-store.example.com/cart-abandonment"
+              
+          # Order rate low
+          - alert: LowOrderRate
+            expr: |
+              sum(rate(orders_created_total{job="retail-store-orders"}[1h])) < scalar(sum(rate(orders_created_total{job="retail-store-orders"}[1h] offset 1d)) * 0.5)
+            for: 30m
+            labels:
+              severity: warning
+              team: business
+            annotations:
+              summary: "Order rate is lower than usual"
+              description: "Current order rate is significantly lower than the same time yesterday"
+              runbook_url: "https://runbooks.retail-store.example.com/low-order-rate"
+              
+          # Average order value drop
+          - alert: AverageOrderValueDrop
+            expr: |
+              sum(rate(order_total_sum{job="retail-store-orders"}[1h])) / sum(rate(order_total_count{job="retail-store-orders"}[1h])) < scalar((sum(rate(order_total_sum{job="retail-store-orders"}[1h] offset 24h)) / sum(rate(order_total_count{job="retail-store-orders"}[1h] offset 24h))) * 0.7)
+            for: 1h
+            labels:
+              severity: warning
+              team: business
+            annotations:
+              summary: "Average order value has dropped significantly"
+              description: "Current average order value is more than 30% below yesterday's value"
+              runbook_url: "https://runbooks.retail-store.example.com/aov-drop"
+
+      # Service mesh alerts
+      - name: servicemesh.alerts
+        rules:
+          # mTLS errors
+          - alert: MTLSDisabled
+            expr: |
+              sum(istio_tcp_connections_opened_total{connection_security_policy!="mutual_tls", destination_service_namespace="retail-store"}) > 0
+            for: 5m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "Non-mTLS traffic detected"
+              description: "Traffic without mutual TLS detected in retail-store namespace"
+              runbook_url: "https://runbooks.retail-store.example.com/mtls-disabled"
+              
+          # Circuit breaker open
+          - alert: CircuitBreakerOpen
+            expr: |
+              sum(increase(envoy_cluster_circuit_breakers_open{namespace="retail-store"}[5m])) > 0
+            for: 5m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "Circuit breaker is open for {{ $labels.cluster }}"
+              description: "Circuit breaker trips detected for cluster {{ $labels.cluster }}"
+              runbook_url: "https://runbooks.retail-store.example.com/circuit-breaker"
+              
+          # High retry rate
+          - alert: HighRetryRate
+            expr: |
+              sum(rate(istio_requests_total{response_flags="RF",destination_service_namespace="retail-store"}[5m]))
+              /
+              sum(rate(istio_requests_total{destination_service_namespace="retail-store"}[5m])) > 0.05
+            for: 10m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "High retry rate detected"
+              description: "{{ $value | printf \"%.1f\" }}% of requests are being retried"
+              runbook_url: "https://runbooks.retail-store.example.com/high-retry-rate"
+              
+          # Outlier detection
+          - alert: OutlierDetected
+            expr: |
+              sum(rate(envoy_cluster_outlier_detection_ejections_enforced_total{namespace="retail-store"}[5m])) > 0
+            for: 5m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "Outliers detected in service mesh"
+              description: "Hosts are being ejected due to outlier detection"
+              runbook_url: "https://runbooks.retail-store.example.com/outlier-detection"
+
+      # SLI/SLO alerts
+      - name: slo.alerts
+        rules:
+          # Error budget burn rate
+          - alert: ErrorBudgetBurnRateCritical
+            expr: |
+              (
+                sum(rate(http_server_requests_seconds_count{job=~"retail-store-.*",status=~"5.."}[1h]))
+                /
+                sum(rate(http_server_requests_seconds_count{job=~"retail-store-.*"}[1h]))
+                /
+                0.01
+                - 1
+              ) > 10
+            for: 5m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "Critical: Error budget burn rate is too high"
+              description: "Error budget is being consumed at {{ $value | printf \"%.1f\" }}x the expected rate"
+              runbook_url: "https://runbooks.retail-store.example.com/error-budget-critical"
+              
+          # Error budget exhausted
+          - alert: ErrorBudgetExhausted
+            expr: |
+              (sum(rate(http_server_requests_seconds_count{job=~"retail-store-.*",status=~"5.."}[30d]))
+              /
+              sum(rate(http_server_requests_seconds_count{job=~"retail-store-.*"}[30d]))) > 0.01
+            for: 5m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "Error budget exhausted"
+              description: "Monthly error budget has been exhausted. SLI: {{ $value | printf \"%.3f\" }} > SLO: 0.99"
+              runbook_url: "https://runbooks.retail-store.example.com/error-budget-exhausted"
+              
+          # Availability below SLO
+          - alert: AvailabilityBelowSLO
+            expr: |
+              (sum(rate(http_server_requests_seconds_count{job=~"retail-store-.*",status!~"5.."}[30d]))
+              /
+              sum(rate(http_server_requests_seconds_count{job=~"retail-store-.*"}[30d]))) * 100 < 99
+            for: 10m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "30-day availability below SLO"
+              description: "Availability is {{ $value | printf \"%.2f\" }}%, which is below the 99% SLO"
+              runbook_url: "https://runbooks.retail-store.example.com/availability-slo"
+
+      # Kubernetes infrastructure alerts
+      - name: kubernetes.alerts
+        rules:
+          # Node not ready
+          - alert: NodeNotReady
+            expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+            for: 10m
+            labels:
+              severity: critical
+              team: platform
+            annotations:
+              summary: "Node {{ $labels.node }} is not ready"
+              description: "Node {{ $labels.node }} has been unready for more than 10 minutes"
+              runbook_url: "https://runbooks.retail-store.example.com/node-not-ready"
+              
+          # Deployment rolled back
+          - alert: DeploymentRolledBack
+            expr: |
+              sum(increase(rollout_revisions_total{namespace="retail-store"}[5m])) > 0
+            for: 1m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "Deployment rolled back"
+              description: "Deployment {{ $labels.deployment }} has been rolled back"
+              runbook_url: "https://runbooks.retail-store.example.com/deployment-rollback"
+              
+          # PersistentVolume issues
+          - alert: PersistentVolumeClaimPending
+            expr: kube_persistentvolumeclaim_status_phase{phase="Pending",namespace="retail-store"} == 1
+            for: 10m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "PVC {{ $labels.persistentvolumeclaim }} is pending"
+              description: "PVC {{ $labels.persistentvolumeclaim }} has been pending for more than 10 minutes"
+              runbook_url: "https://runbooks.retail-store.example.com/pvc-pending"
+              
+          # Deployment replica mismatch
+          - alert: DeploymentReplicasMismatch
+            expr: |
+              kube_deployment_spec_replicas{namespace="retail-store"} != kube_deployment_status_replicas_available{namespace="retail-store"}
+            for: 15m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "Deployment {{ $labels.deployment }} replicas mismatch"
+              description: "Deployment {{ $labels.deployment }} has {{ $labels.value }} available replicas, but {{ $labels.spec_replicas }} are expected"
+              runbook_url: "https://runbooks.retail-store.example.com/replica-mismatch"
+              
+          # Job failed
+          - alert: JobFailed
+            expr: kube_job_status_failed{namespace="retail-store"} == 1
+            for: 5m
+            labels:
+              severity: warning
+              team: platform
+            annotations:
+              summary: "Job {{ $labels.job_name }} failed"
+              description: "Job {{ $labels.job_name }} in namespace {{ $labels.namespace }} has failed"
+              runbook_url: "https://runbooks.retail-store.example.com/job-failed"

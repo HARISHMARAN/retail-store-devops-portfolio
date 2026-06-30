@@ -1,0 +1,18 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - default-deny-all-namespaces.yaml
+  - allow-monitoring.yaml
+  - allow-dns.yaml
+  - allow-ingress-traffic.yaml
+  - allow-service-mesh.yaml
+
+commonLabels:
+  app.kubernetes.io/name: network-policies
+  app.kubernetes.io/part-of: retail-store
+  app.kubernetes.io/component: security
+
+commonAnnotations:
+  security.retail-store.io/category: network-isolation
+  security.retail-store.io/enforcement: strict

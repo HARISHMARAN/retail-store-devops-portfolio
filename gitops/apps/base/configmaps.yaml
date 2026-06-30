@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: retail-store-config
+  labels:
+    app.kubernetes.io/part-of: retail-store
+data:
+  LOG_LEVEL: "INFO"
+  ENVIRONMENT: "production"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka-cluster-kafka-bootstrap.kafka:9092"
+  KAFKA_CONSUMER_GROUP_ID: "retail-store"
+  KAFKA_TOPICS_ORDERS: "retail-orders"
+  KAFKA_TOPICS_CHECKOUT: "retail-checkout"
+  TRACING_ENABLED: "true"
+  TRACING_SAMPLING_RATE: "0.1"
+  JAEGER_AGENT_HOST: "jaeger-agent.observability"
+  JAEGER_AGENT_PORT: "6831"
+  METRICS_ENABLED: "true"
+  RETRY_MAX_ATTEMPTS: "3"
+  RETRY_BACKOFF_MS: "1000"
+  CIRCUIT_BREAKER_ENABLED: "true"
+  CIRCUIT_BREAKER_TIMEOUT_MS: "30000"
+  CATALOG_CACHE_TTL_SECONDS: "300"
+  CART_SESSION_TIMEOUT_MINUTES: "30"
+  ML_MODEL_ENDPOINT: "http://ml-models.internal:8501"

@@ -1,0 +1,131 @@
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: requiredlabels
+  annotations:
+    description: "Requires specific labels to be present on resources"
+    metadata.gatekeeper.sh/title: "Required Labels"
+    metadata.gatekeeper.sh/version: "1.0.0"
+spec:
+  crd:
+    spec:
+      names:
+        kind: RequiredLabels
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            labels:
+              type: array
+              description: "List of required labels"
+              items:
+                type: object
+                properties:
+                  key:
+                    type: string
+                    description: "Label key"
+                  allowedRegex:
+                    type: string
+                    description: "Regex pattern the label value must match"
+                required: ["key"]
+            requireVersion:
+              type: boolean
+              default: false
+              description: "Require app.kubernetes.io/version label"
+            requireTeam:
+              type: boolean
+              default: false
+              description: "Require team/owner label"
+            message:
+              type: string
+              default: "Required labels are missing"
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package requiredlabels
+
+        violation[{"msg": msg, "details": details}] {
+          provided := {label | input.review.object.metadata.labels[label]}
+          required := {label.key | label := input.parameters.labels[_]}
+          missing := required - provided
+          count(missing) > 0
+          msg := sprintf("Missing required labels: %v", [missing])
+          details := {"missing_labels": missing}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          input.parameters.requireVersion
+          not input.review.object.metadata.labels["app.kubernetes.io/version"]
+          msg := "Missing required label: app.kubernetes.io/version"
+          details := {"missing_labels": ["app.kubernetes.io/version"]}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          input.parameters.requireTeam
+          not input.review.object.metadata.labels["team"]
+          not input.review.object.metadata.labels["owner"]
+          msg := "Missing required label: team or owner"
+          details := {"missing_labels": ["team", "owner"]}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          label := input.parameters.labels[_]
+          label.allowedRegex
+          value := input.review.object.metadata.labels[label.key]
+          not re_match(label.allowedRegex, value)
+          msg := sprintf("Label '%v' value '%v' does not match required pattern '%v'", [label.key, value, label.allowedRegex])
+          details := {"label": label.key, "value": value, "pattern": label.allowedRegex}
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: RequiredLabels
+metadata:
+  name: required-labels-all
+  annotations:
+    description: "All resources must have required labels"
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod", "Namespace", "Service", "ConfigMap", "Secret"]
+      - apiGroups: ["apps"]
+        kinds: ["Deployment", "DaemonSet", "StatefulSet", "ReplicaSet"]
+      - apiGroups: ["batch"]
+        kinds: ["Job", "CronJob"]
+      - apiGroups: ["networking.k8s.io"]
+        kinds: ["Ingress", "NetworkPolicy"]
+      - apiGroups: ["autoscaling"]
+        kinds: ["HorizontalPodAutoscaler"]
+    excludedNamespaces:
+      - kube-system
+      - gatekeeper-system
+  parameters:
+    labels:
+      - key: "app.kubernetes.io/name"
+    - key: "app.kubernetes.io/part-of"
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: RequiredLabels
+metadata:
+  name: required-labels-production
+  annotations:
+    description: "Production resources must include version and team labels"
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+      - apiGroups: ["apps"]
+        kinds: ["Deployment", "DaemonSet", "StatefulSet"]
+      - apiGroups: ["batch"]
+        kinds: ["Job", "CronJob"]
+    namespaces:
+      - production
+      - prod
+  parameters:
+    labels:
+      - key: "app.kubernetes.io/name"
+      - key: "app.kubernetes.io/version"
+        allowedRegex: "^v?[0-9]+\\.[0-9]+\\.[0-9]+$"
+    requireVersion: true
+    requireTeam: true

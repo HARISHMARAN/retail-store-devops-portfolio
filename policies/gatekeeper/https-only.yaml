@@ -1,0 +1,104 @@
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: httpsonly
+  annotations:
+    description: "Requires all Ingress resources to use HTTPS/TLS"
+    metadata.gatekeeper.sh/title: "HTTPS Only Ingress"
+    metadata.gatekeeper.sh/version: "1.0.0"
+spec:
+  crd:
+    spec:
+      names:
+        kind: HTTPSOnly
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            exemptHosts:
+              type: array
+              items:
+                type: string
+            requireACME:
+              type: boolean
+              default: false
+            minTLSVersion:
+              type: string
+              enum: ["1.0", "1.1", "1.2", "1.3"]
+              default: "1.2"
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package httpsonly
+
+        violation[{"msg": msg, "details": details}] {
+          input.review.kind.version == "networking.k8s.io/v1" 
+          input.review.kind.kind == "Ingress"
+          not is_exempt(input.review.object)
+          not has_tls(input.review.object)
+          msg := "Ingress must have TLS configured"
+          details := {"name": input.review.object.metadata.name}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          input.review.kind.version == "networking.k8s.io/v11beta1"
+          input.review.kind.kind == "Ingress"
+          not is_exempt(input.review.object)
+          not has_tls(input.review.object)
+          msg := "Ingress must have TLS configured"
+          details := {"name": input.review.object.metadata.name}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          input.review.object.spec.tls
+          not is_exempt(input.review.object)
+          tls := input.review.object.spec.tls[_]
+          not tls.secretName
+          msg := "TLS entry must have secretName specified"
+          details := {"name": input.review.object.metadata.name}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          input.review.object.spec.tls
+          not is_exempt(input.review.object)
+          tls := input.review.object.spec.tls[_]
+          not tls.hosts
+          count(tls.hosts) == 0
+          msg := "TLS entry must have hosts specified"
+          details := {"name": input.review.object.metadata.name}
+        }
+
+        violation[{"msg": msg}] {
+          input.parameters.requireACME
+          input.review.object.metadata.annotations
+          ann := input.review.object.metadata.annotations["kubernetes.io/tls-acme"]
+          ann != "true"
+          msg := "Ingress must have kubernetes.io/tls-acme=true annotation for automatic certificate management"
+        }
+
+        has_tls(obj) {
+          obj.spec.tls
+          count(obj.spec.tls) > 0
+        }
+
+        is_exempt(obj) {
+          params := input.parameters
+          params.exemptHosts
+          host := obj.spec.rules[_].host
+          params.exemptHosts[_] == host
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: HTTPSOnly
+metadata:
+  name: https-only-ingress
+  annotations:
+    description: "All Ingress resources must use HTTPS/TLS"
+spec:
+  match:
+    kinds:
+      - apiGroups: ["networking.k8s.io"]
+        kinds: ["Ingress"]
+  parameters:
+    minTLSVersion: "1.2"
+    requireACME: true

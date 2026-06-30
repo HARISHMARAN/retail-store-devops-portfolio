@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - _gatekeeper-setup.yaml
+  - container-limits.yaml
+  - required-labels.yaml
+  - https-only.yaml
+  - deny-privileged-containers.yaml
+  - unique-ingress-host.yaml
+  - image-digest.yaml
+  - no-host-network.yaml
+  - read-only-root-filesystem.yaml
+
+commonLabels:
+  app.kubernetes.io/name: gatekeeper-policies
+  app.kubernetes.io/part-of: retail-store
+  app.kubernetes.io/component: security
+
+commonAnnotations:
+  security.retail-store.io/category: admission-control
+  security.retail-store.io/enforcement: strict

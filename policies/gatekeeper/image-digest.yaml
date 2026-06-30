@@ -1,0 +1,101 @@
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: imagedigest
+  annotations:
+    description: "Requires container images to use digests instead of mutable tags"
+    metadata.gatekeeper.sh/title: "Image Digest Required"
+    metadata.gatekeeper.sh/version: "1.0.0"
+spec:
+  crd:
+    spec:
+      names:
+        kind: ImageDigest
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            exemptNamespaces:
+              type: array
+              items:
+                type: string
+           _exemptImages:
+              type: array
+              items:
+                type: string
+            allowedRegistries:
+              type: array
+              items:
+                type: string
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package imagedigest
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.containers[_]
+          not is_exempt(container, input.parameters)
+          not has_digest(container.image)
+          msg := sprintf("Container '%v' uses an image tag without a digest: %v. Images must use digests for immutability", [container.name, container.image])
+          details := {"container": container.name, "image": container.image}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.initContainers[_]
+          not is_exempt(container, input.parameters)
+          not has_digest(container.image)
+          msg := sprintf("Init container '%v' uses an image tag without a digest: %v. Images must use digests for immutability", [container.name, container.image])
+          details := {"container": container.name, "image": container.image, "type": "initContainer"}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.containers[_]
+          input.parameters.allowedRegistries
+          not is_from_allowed_registry(container.image, input.parameters.allowedRegistries)
+          msg := sprintf("Container '%v' uses image from disallowed registry: %v", [container.name, container.image])
+          details := {"container": container.name, "image": container.image, "allowedRegistries": input.parameters.allowedRegistries}
+        }
+
+        has_digest(image) {
+          contains(image, "@sha256:")
+        }
+
+        has_digest(image) {
+          contains(image, "@sha512:")
+        }
+
+        is_from_allowed_registry(image, registries) {
+          registry := registries[_]
+          startswith(image, registry)
+        }
+
+        is_exempt(container, params) {
+          params._exemptImages
+          image := container.image
+          params._exemptImages[_] == image
+        }
+
+        is_exempt(container, params) {
+          params.exemptNamespaces
+          params.exemptNamespaces[_] == input.review.namespace
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: ImageDigest
+metadata:
+  name: image-digest-production
+  annotations:
+    description: "Production workloads must use image digests instead of tags"
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+      - apiGroups: ["apps"]
+        kinds: ["Deployment", "DaemonSet", "StatefulSet", "ReplicaSet"]
+      - apiGroups: ["batch"]
+        kinds: ["Job", "CronJob"]
+    namespaces:
+      - production
+      - prod
+  parameters: {}

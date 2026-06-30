@@ -1,0 +1,64 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: retail-store-staging
+
+resources:
+  - ../base
+  - ingress.yaml
+  - hpa.yaml
+  - secrets.yaml
+
+commonLabels:
+  environment: staging
+
+commonAnnotations:
+  owner: platform-team
+  run-mode: staging
+
+replicas:
+  - name: ui
+    count: 2
+  - name: catalog
+    count: 2
+  - name: cart
+    count: 2
+  - name: orders
+    count: 2
+  - name: checkout
+    count: 2
+
+images:
+  - name: public.ecr.aws/aws-containers/retail-store-sample-ui
+    newTag: "latest"
+  - name: public.ecr.aws/aws-containers/retail-store-sample-catalog
+    newTag: "latest"
+  - name: public.ecr.aws/aws-containers/retail-store-sample-cart
+    newTag: "latest"
+  - name: public.ecr.aws/aws-containers/retail-store-sample-orders
+    newTag: "latest"
+  - name: public.ecr.aws/aws-containers/retail-store-sample-checkout
+    newTag: "latest"
+
+configMapGenerator:
+  - name: retail-store-env-config
+    behavior: merge
+    literals:
+      - ENVIRONMENT=staging
+      - LOG_LEVEL=debug
+      - ENABLE_TRACING=true
+      - METRICS_ENABLED=true
+
+patchesStrategicMerge:
+  - resource-limits.yaml
+
+patches:
+  - target:
+      kind: Deployment
+      name: ui
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: RETAIL_UI_THEME
+          value: "teal"

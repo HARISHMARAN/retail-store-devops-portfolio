@@ -1,0 +1,132 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: catalog-pod-kill
+  namespace: chaos-testing
+  labels:
+    app: retail-store
+    experiment: pod-kill
+    severity: medium
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces:
+      - retail-store-production
+      - retail-store-staging
+    labelSelectors:
+      app.kubernetes.io/name: catalog
+  scheduler:
+    cron: "0 4 * * *"
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: checkout-pod-failure
+  namespace: chaos-testing
+  labels:
+    app: retail-store
+    experiment: pod-failure
+spec:
+  action: pod-failure
+  mode: fixed-percent
+  value: "30"
+  duration: "60s"
+  selector:
+    namespaces:
+      - retail-store-staging
+    labelSelectors:
+      app.kubernetes.io/name: checkout
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: catalog-network-latency
+  namespace: chaos-testing
+  labels:
+    severity: low
+    experiment: latency
+spec:
+  action: delay
+  mode: all
+  selector:
+    namespaces:
+      - retail-store-staging
+    labelSelectors:
+      app.kubernetes.io/name: catalog
+  delay:
+    latency: "100ms"
+    correlation: "50"
+    jitter: "10ms"
+  duration: "120s"
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: NetworkChaos
+metadata:
+  name: cart-network-partition
+  namespace: chaos-testing
+  labels:
+    severity: high
+    experiment: partition
+spec:
+  action: partition
+  mode: all
+  selector:
+    namespaces:
+      - retail-store-staging
+    labelSelectors:
+      app.kubernetes.io/name: cart
+  direction: both
+  target:
+    selector:
+      namespaces:
+        - retail-store-staging
+      labelSelectors:
+        app.kubernetes.io/name: redis
+      mode: all
+  duration: "30s"
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StressChaos
+metadata:
+  name: checkout-cpu-stress
+  namespace: chaos-testing
+spec:
+  mode: one
+  selector:
+    namespaces:
+      - retail-store-staging
+    labelSelectors:
+      app.kubernetes.io/name: checkout
+  stressors:
+    cpu:
+      workers: 2
+      load: 80
+  duration: "90s"
+  scheduler:
+    cron: "0 3 * * 2"
+---
+apiVersion: chaos-mesh.org/v1alpha1
+kind: StableExperiment
+metadata:
+  name: retail-store-stable-experiment
+  namespace: chaos-testing
+spec:
+  target: "retail-store-canary"
+  schedule:
+    cron: "0 */6 * * *"
+  duration: "30m"
+  phase: "canary-analysis"
+  cases:
+    - name: "catalog-pod-kill"
+      templateRef:
+        name: catalog-pod-kill
+        namespace: chaos-testing
+    - name: "network-latency"
+      templateRef:
+        name: catalog-network-latency
+        namespace: chaos-testing
+    - name: "checkout-stress"
+      templateRef:
+        name: checkout-cpu-stress
+        namespace: chaos-testing

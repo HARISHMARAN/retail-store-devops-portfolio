@@ -1,0 +1,62 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: retail-store
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: Retail Store Application Project
+  sourceRepos:
+    - https://github.com/Harishmaranthirumaran/retail-store-sample-app.git
+    - https://gallery.ecr.aws/aws-containers
+  destinations:
+    - namespace: 'retail-store-*'
+      server: https://kubernetes.default.svc
+    - namespace: 'monitoring'
+      server: https://kubernetes.default.svc
+    - namespace: 'ingress-nginx'
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: ''
+      kind: Namespace
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRole
+    - group: 'rbac.authorization.k8s.io'
+      kind: ClusterRoleBinding
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  roles:
+    - name: ci-role
+      description: CI/CD pipeline role for automated deployments
+      policies:
+        - p, proj:retail-store:ci-role, applications, sync, retail-store/*, allow
+        - p, proj:retail-store:ci-role, applications, get, retail-store/*, allow
+      groups:
+        - system:authenticated
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: retail-store-root
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  project: retail-store
+  source:
+    repoURL: https://github.com/Harishmaranthirumaran/retail-store-sample-app.git
+    targetRevision: main
+    path: gitops/argocd/projects
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=false

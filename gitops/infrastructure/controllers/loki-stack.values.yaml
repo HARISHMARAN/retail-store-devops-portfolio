@@ -1,0 +1,387 @@
+loki-stack:
+  loki:
+    enabled: true
+    
+    global:
+      image:
+        registry: docker.io
+        repository: grafana/loki
+        tag: 2.9.0
+        pullPolicy: IfNotPresent
+    
+    auth:
+      enabled: false
+    
+    rbac:
+      create: true
+      pspEnabled: false
+    
+    serviceAccount:
+      create: true
+      name: loki
+    
+    deploymentMode: distributed
+    
+    loki:
+      commonConfig:
+        replication_factor: 3
+      
+      structuredConfig:
+        auth_enabled: false
+        
+        server:
+          http_listen_port: 3100
+          grpc_listen_port: 9096
+          log_level: info
+          http_server_read_timeout: 30s
+          http_server_write_timeout: 30s
+          grpc_server_max_recv_msg_size: 104857600
+          grpc_server_max_send_msg_size: 104857600
+        
+        memberlist:
+          join_members:
+            - loki-memberlist.monitoring.svc.cluster.local:7946
+          
+        ingester:
+          chunk_idle_period: 1h
+          chunk_block_size: 32768
+          chunk_retain_period: 30s
+          chunk_encoding: snappy
+          max_transfer_retries: 0
+          wal:
+            enabled: true
+            dir: /loki/wal
+            checkpoint_duration: 5m
+        
+        limits_config:
+          enforce_metric_name: false
+          reject_old_samples: true
+          reject_old_samples_max_age: 168h
+          retention_period: 744h
+          ingestion_rate_mb: 20
+          ingestion_burst_size_mb: 30
+          per_stream_rate_limit: 10MB
+          per_stream_rate_limit_burst: 15MB
+          max_streams_per_user: 10000
+          max_global_streams_per_user: 50000
+          max_query_length: 721h
+          max_query_parallelism: 32
+          max_entries_limit_per_query: 5000
+          cardinality_limit: 200000
+        
+        schema_config:
+          configs:
+            - from: 2024-01-01
+              store: boltdb-shipper
+              object_store: s3
+              schema: v13
+              index:
+                prefix: loki_index_
+                period: 24h
+        
+        storage_config:
+          boltdb_shipper:
+            shared_store: s3
+            active_index_directory: /loki/index
+            cache_location: /loki/boltdb-cache
+          
+          index_queries_cache_config:
+            embedded_cache:
+              enabled: true
+              max_size_mb: 4096
+              ttl: 24h
+        
+        chunk_store_config:
+          max_look_back_period: 720h
+          chunk_cache_config:
+            embedded_cache:
+              enabled: true
+              max_size_mb: 4096
+              ttl: 24h
+        
+        query_range:
+          split_queries_by_interval: 15m
+          align_queries_with_step: true
+          cache_results: true
+        
+        ruler:
+          storage:
+            type: s3
+            s3:
+              bucketnames: retail-store-loki-ruler
+          alertmanager_url: http://alertmanager.monitoring.svc:9093
+          rule_path: /loki/rules
+          enable_alertmanager_v2: true
+          enable_api: true
+        
+        compactor:
+          working_directory: /loki/compactor
+          shared_store: s3
+          compaction_interval: 10m
+          retention_enabled: true
+          retention_delete_delay: 2h
+          retention_delete_worker_count: 150
+          delete_request_store: s3
+      
+      storage:
+        type: s3
+        bucketNames:
+          chunks: retail-store-loki-chunks
+          ruler: retail-store-loki-ruler
+          admin: retail-store-loki-admin
+        s3:
+          endpoint: s3.amazonaws.com
+          region: us-east-1
+          accessKeyId: null
+          secretAccessKey: null
+          s3ForcePathStyle: false
+          insecure: false
+      
+      storageConfig:
+        type: s3
+        s3:
+          s3: s3://us-east-1/retail-store-loki
+          region: us-east-1
+    
+    # Single binary mode
+    singleBinary:
+      replicas: 3
+      
+      persistence:
+        enabled: true
+        storageClassName: gp3
+        accessModes:
+          - ReadWriteOnce
+        size: 50Gi
+      
+      resources:
+        requests:
+          cpu: 200m
+          memory: 1Gi
+        limits:
+          cpu: 1000m
+          memory: 4Gi
+      
+      priorityClassName: null
+      
+      terminationGracePeriodSeconds: 300
+      
+      extraArgs: []
+      
+      autoscaling:
+        enabled: false
+      
+      podManagementPolicy: Parallel
+      
+      podAnnotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3100"
+      
+      podLabels:
+        app.kubernetes.io/component: logging
+      
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: loki
+              topologyKey: kubernetes.io/hostname
+      
+      tolerations:
+        - key: node-role.kubernetes.io/worker
+          operator: Exists
+          effect: NoSchedule
+    
+    # Service configuration
+    service:
+      type: ClusterIP
+      annotations: {}
+      labels: {}
+      ports:
+        http:
+          port: 3100
+          targetPort: http
+          protocol: TCP
+        grpc:
+          port: 9096
+          targetPort: grpc
+          protocol: TCP
+      
+      memberlist:
+        type: ClusterIP
+        clusterIP: None
+        port: 7946
+    
+    # Gateway configuration
+    gateway:
+      enabled: false
+    
+    # Grafana data source
+    Grafana:
+      enabled: true
+      dataSource:
+        enabled: true
+        url: http://loki.monitoring.svc:3100
+        name: Loki
+        access: proxy
+        jsonData:
+          maxLines: 1000
+          derivedFields:
+            - name: TraceID
+              matcherRegex: '"traceId":"(\w+)"'
+              url: 'https://jaeger.retail-store.example.com/trace/$${__value.raw}'
+              datasourceUid: tempo
+  
+  # Promtail
+  promtail:
+    enabled: true
+    
+    serviceAccount:
+      create: true
+      name: promtail
+    
+    rbac:
+      create: true
+      pspEnabled: false
+    
+    config:
+      server:
+        http_listen_port: 9080
+        grpc_listen_port: 0
+        log_level: info
+      
+      positions:
+        filename: /tmp/positions.yaml
+      
+      clients:
+        - url: http://loki.monitoring.svc:3100/loki/api/v1/push
+          tenant_id: retail-store
+          batchwait: 1s
+          batchsize: 1048576
+          timeout: 10s
+          backoff_config:
+            min_period: 500ms
+            max_period: 5m
+            max_retries: 10
+          external_labels:
+            cluster: retail-store-prod
+            environment: production
+      
+      scrape_configs:
+        - job_name: kubernetes-pods
+          kubernetes_sd_configs:
+            - role: pod
+              namespaces:
+                names:
+                  - retail-store
+                  - monitoring
+                  - istio-system
+          pipeline_stages:
+            - docker: {}
+            - match:
+                selector: '{app_kubernetes_io_name=~".+"}'
+                stages:
+                  - labels:
+                      app: app_kubernetes_io_name
+                      service: app_kubernetes_io_component
+                      namespace: namespace
+            - match:
+                selector: '{level=~"debug|info|warn|error|fatal"}'
+                stages:
+                  - labels:
+                      level: level
+            - match:
+                selector: '{trace_id=~".+"}'
+                stages:
+                  - labels:
+                      trace_id: trace_id
+          relabel_configs:
+            - source_labels: [__meta_kubernetes_pod_container_name]
+              action: drop
+              regex: "istio-proxy|istio-init"
+            - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+              target_label: app
+            - source_labels: [__meta_kubernetes_namespace]
+              target_label: namespace
+            - source_labels: [__meta_kubernetes_pod_name]
+              target_label: pod
+            - source_labels: [__meta_kubernetes_pod_container_name]
+              target_label: container
+            - source_labels: [__meta_kubernetes_pod_node_name]
+              target_label: node
+        
+        - job_name: journal
+          journal:
+            json: false
+            max_age: 12h
+            path: /var/log/journal
+            labels:
+              job: systemd-journal
+          relabel_configs:
+            - source_labels: ['__journal__systemd_unit']
+              target_label: 'unit'
+            - source_labels: ['__journal__hostname']
+              target_label: 'hostname'
+      
+      limits_config:
+        readline_rate_enabled: true
+        readline_rate: 10000
+        readline_burst: 20000
+        max_line_size: 256kb
+    
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+    
+    extraVolumes:
+      - name: journal
+        hostPath:
+          path: /var/log/journal
+    
+    extraVolumeMounts:
+      - name: journal
+        mountPath: /var/log/journal
+        readOnly: true
+    
+    tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+    
+    daemonset:
+      enabled: true
+      priorityClassName: null
+      podAnnotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9080"
+      podLabels:
+        app.kubernetes.io/component: logging
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+    
+    metrics:
+      enabled: true
+      serviceMonitor:
+        enabled: true
+        interval: 30s
+        namespace: monitoring
+  
+  # Fluent-bit (optional)
+  fluent-bit:
+    enabled: false

@@ -1,0 +1,318 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: loki
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/component: logging
+    app.kubernetes.io/part-of: retail-store
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: loki
+  labels:
+    app.kubernetes.io/name: loki
+rules:
+  - apiGroups: [""]
+    resources:
+      - nodes
+      - nodes/proxy
+      - services
+      - endpoints
+      - pods
+      - namespaces
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: loki
+  labels:
+    app.kubernetes.io/name: loki
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: loki
+subjects:
+  - kind: ServiceAccount
+    name: loki
+    namespace: monitoring
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: loki
+data:
+  loki.yaml: |
+    auth_enabled: false
+    
+    server:
+      http_listen_port: 3100
+      grpc_listen_port: 9096
+      log_level: info
+    
+    memberlist:
+      join_members:
+        - loki-memberlist.monitoring.svc.cluster.local:7946
+    
+    ingester:
+      lifecycler:
+        address: 127.0.0.1
+        ring:
+          kvstore:
+            store: memberlist
+          replication_factor: 3
+        final_sleep: 0s
+        num_tokens: 512
+      chunk_idle_period: 1h
+      chunk_block_size: 32768
+      chunk_retain_period: 30s
+      chunk_encoding: snappy
+      max_transfer_retries: 0
+      wal:
+        enabled: true
+        dir: /loki/wal
+        checkpoint_duration: 5m
+    
+    limits_config:
+      enforce_metric_name: false
+      reject_old_samples: true
+      reject_old_samples_max_age: 168h
+      retention_period: 744h
+      ingestion_rate_mb: 20
+      ingestion_burst_size_mb: 30
+      per_stream_rate_limit: 10MB
+      per_stream_rate_limit_burst: 15MB
+      max_streams_per_user: 10000
+      max_global_streams_per_user: 50000
+      max_query_length: 721h
+      max_query_parallelism: 32
+      max_entries_limit_per_query: 5000
+      cardinality_limit: 200000
+    
+    schema_config:
+      configs:
+        - from: 2024-01-01
+          store: boltdb-shipper
+          object_store: s3
+          schema: v13
+          index:
+            prefix: loki_index_
+            period: 24h
+    
+    storage_config:
+      aws:
+        s3: s3://us-east-1/retail-store-loki
+        region: us-east-1
+      boltdb_shipper:
+        shared_store: s3
+        active_index_directory: /loki/index
+        cache_location: /loki/boltdb-cache
+        index_gateway_client:
+          server_address: gateway.monitoring.svc:9095
+      
+      index_queries_cache_config:
+        memcached:
+          batch_size: 100
+          parallelism: 100
+    
+    chunk_store_config:
+      max_look_back_period: 720h
+      chunk_cache_config:
+        embedded_cache:
+          enabled: true
+          max_size_mb: 4096
+          ttl: 24h
+    
+    query_range:
+      split_queries_by_interval: 15m
+      align_queries_with_step: true
+      cache_results: true
+      results_cache:
+        cache:
+          memcached_client:
+            addresses: dnssrv+_memcached._tcp.loki-memcached.monitoring.svc.cluster.local
+    
+    ruler:
+      storage:
+        type: s3
+        s3:
+          bucketnames: retail-store-loki-ruler
+      alertmanager_url: http://alertmanager.monitoring.svc:9093
+      rule_path: /loki/rules
+      enable_alertmanager_v2: true
+      enable_api: true
+    
+    compactor:
+      working_directory: /loki/compactor
+      shared_store: s3
+      compaction_interval: 10m
+      retention_enabled: true
+      retention_delete_delay: 2h
+      retention_delete_worker_count: 150
+      delete_request_store: s3
+    
+    query_scheduler:
+      max_outstanding_requests_per_tenant: 4096
+    
+    frontend:
+      max_outstanding_per_tenant: 4096
+      compress_responses: true
+      log_queries_longer_than: 1s
+    
+    frontend_worker:
+      grpc_client_config:
+        max_send_msg_size: 104857600
+    
+    table_manager:
+      retention_deletes_enabled: true
+      retention_period: 720h
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: loki
+    app.kubernetes.io/component: logging
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: loki
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loki
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3100"
+    spec:
+      serviceAccountName: loki
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+      containers:
+        - name: loki
+          image: grafana/loki:2.9.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - "-config.file=/etc/loki/loki.yaml"
+            - "-target=all"
+          ports:
+            - name: http
+              containerPort: 3100
+              protocol: TCP
+            - name: grpc
+              containerPort: 9096
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 200m
+              memory: 1Gi
+            limits:
+              cpu: 1000m
+              memory: 4Gi
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loki
+              readOnly: true
+            - name: storage
+              mountPath: /loki
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: config
+          configMap:
+            name: loki-config
+        - name: storage
+          emptyDir: {}
+        - name: data
+          persistentVolumeClaim:
+            claimName: loki-storage
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: loki
+              topologyKey: kubernetes.io/hostname
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: loki
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 3100
+      targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: 9096
+      targetPort: grpc
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: loki
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-memberlist
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: loki
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: memberlist
+      port: 7946
+      targetPort: 7946
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: loki
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loki-storage
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: loki
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 50Gi

@@ -1,0 +1,143 @@
+apiVersion: templates.gatekeeper.sh/v1
+kind: ConstraintTemplate
+metadata:
+  name: containerlimits
+  annotations:
+    description: "Requires containers to have resource limits defined (CPU and memory)"
+    metadata.gatekeeper.sh/title: "Container Resource Limits"
+    metadata.gatekeeper.sh/version: "1.0.0"
+spec:
+  crd:
+    spec:
+      names:
+        kind: ContainerLimits
+      validation:
+        openAPIV3Schema:
+          type: object
+          properties:
+            exemptNamespaces:
+              type: array
+              items:
+                type: string
+            exemptContainers:
+              type: array
+              items:
+                type: string
+            cpuMin:
+              type: string
+              default: "50m"
+            memoryMin:
+              type: string
+              default: "64Mi"
+            cpuMax:
+              type: string
+            memoryMax:
+              type: string
+            enforceRatio:
+              type: boolean
+              default: false
+  targets:
+    - target: admission.k8s.gatekeeper.sh
+      rego: |
+        package containerlimits
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.containers[_]
+          not is_exempt(container, input.parameters)
+          not has_cpu_limit(container)
+          msg := sprintf("Container '%v' does not have a CPU limit defined", [container.name])
+          details := {"container": container.name, "missing": "cpu limit"}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.containers[_]
+          not is_exempt(container, input.parameters)
+          not has_memory_limit(container)
+          msg := sprintf("Container '%v' does not have a memory limit defined", [container.name])
+          details := {"container": container.name, "missing": "memory limit"}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.containers[_]
+          is_exempt(container, input.parameters)
+        }
+        else = false {
+          is_exempt(container, input.parameters)
+        }
+        else = true {
+          not has_cpu_limit(container)
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.containers[_]
+          is_exempt(container, input.parameters)
+        }
+        else = false {
+          is_exempt(container, input.parameters)
+        }
+        else = true {
+          not has_memory_limit(container)
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.containers[_]
+          not is_exempt(container, input.parameters)
+          cpu_min := resourceunits.parse(input.parameters.cpuMin)
+          container.resources.limits.cpu
+          cpu_limit := resourceunits.parse(container.resources.limits.cpu)
+          cpu_limit.millicores < cpu_min.millicores
+          msg := sprintf("Container '%v' CPU limit %v is below minimum %v", [container.name, container.resources.limits.cpu, input.parameters.cpuMin])
+          details := {"container": container.name, "limit": container.resources.limits.cpu, "min": input.parameters.cpuMin}
+        }
+
+        violation[{"msg": msg, "details": details}] {
+          container := input.review.object.spec.containers[_]
+          not is_exempt(container, input.parameters)
+          memory_min := resourceunits.parse(input.parameters.memoryMin)
+          container.resources.limits.memory
+          memory_limit := resourceunits.parse(container.resources.limits.memory)
+          memory_limit.bytes < memory_min.bytes
+          msg := sprintf("Container '%v' memory limit %v is below minimum %v", [container.name, container.resources.limits.memory, input.parameters.memoryMin])
+          details := {"container": container.name, "limit": container.resources.limits.memory, "min": input.parameters.memoryMin}
+        }
+
+        has_cpu_limit(c) {
+          c.resources.limits.cpu
+        }
+
+        has_memory_limit(c) {
+          c.resources.limits.memory
+        }
+
+        is_exempt(container, params) {
+          params.exemptContainers[_] == container.name
+        }
+
+        is_exempt(container, params) {
+          params.exemptNamespaces[_] == input.review.namespace
+        }
+---
+apiVersion: constraints.gatekeeper.sh/v1beta1
+kind: ContainerLimits
+metadata:
+  name: container-limits
+  annotations:
+    description: "All containers must define resource limits (CPU and memory)"
+    policy.gatekeeper.sh/enforcement: "deny"
+spec:
+  match:
+    kinds:
+      - apiGroups: [""]
+        kinds: ["Pod"]
+      - apiGroups: ["apps"]
+        kinds: ["Deployment", "DaemonSet", "StatefulSet", "ReplicaSet"]
+      - apiGroups: ["batch"]
+        kinds: ["Job", "CronJob"]
+    excludedNamespaces:
+      - kube-system
+      - gatekeeper-system
+      - local-path-storage
+  parameters:
+    cpuMin: "50m"
+    memoryMin: "64Mi"
+    enforceRatio: true

@@ -1,0 +1,99 @@
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: daily-backup-staging
+  namespace: velero
+spec:
+  schedule: "0 5 * * *"
+  template:
+    includedNamespaces:
+      - retail-store-staging
+      - monitoring
+      - argocd
+    excludedResources:
+      - events
+      - pods
+      - secrets
+    storageLocation: aws-backups
+    volumeSnapshotLocations:
+      - aws-snapshots
+    hooks:
+      resources:
+        - name: pre-backup-hook
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: retail-store
+          namespaces:
+            - retail-store-staging
+          pre:
+            - exec:
+                container: ui
+                command:
+                  - /bin/sh
+                  - -c
+                  - "curl -X POST http://localhost:8080/actuator/backup"
+                onError: Continue
+    ttl: 720h
+    labelSelector:
+      matchLabels:
+        velero.io/exclude-from-backup: "false"
+---
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: daily-backup-production
+  namespace: velero
+spec:
+  schedule: "0 3 * * *"
+  template:
+    includedNamespaces:
+      - retail-store-production
+    excludedResources:
+      - events
+      - pods
+    storageLocation: production-backups
+    volumeSnapshotLocations:
+      - production-snapshots
+    hooks:
+      resources:
+        - name: db-consistent-backup
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: orders
+          pre:
+            - exec:
+                container: orders
+                command:
+                  - /bin/sh
+                  - -c
+                  - "pg_dump -U postgres > /tmp/backup.sql"
+                onError: Fail
+    ttl: 2160h
+---
+apiVersion: velero.io/v1
+kind: BackupStorageLocation
+metadata:
+  name: aws-backups
+  namespace: velero
+spec:
+  provider: aws
+  objectStorage:
+    bucket: retail-store-backups
+    prefix: velero/
+  credential:
+    name: cloud-credentials
+    key: cloud
+  config:
+    region: us-west-2
+    s3ForcePathStyle: true
+    s3Url: https://s3.us-west-2.amazonaws.com
+---
+apiVersion: velero.io/v1
+kind: VolumeSnapshotLocation
+metadata:
+  name: aws-snapshots
+  namespace: velero
+spec:
+  provider: aws
+  config:
+    region: us-west-2
